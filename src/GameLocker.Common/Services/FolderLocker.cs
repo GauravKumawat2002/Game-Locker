@@ -50,9 +50,7 @@ public class FolderLocker
     }
 
     /// <summary>
-    /// Locks a folder by applying ACL restrictions.
-    /// Note: Full file encryption is resource-intensive for large game folders.
-    /// ACL-based locking provides fast, effective protection.
+    /// Locks a folder by encrypting all files and applying ACL restrictions.
     /// </summary>
     /// <param name="folderPath">Path to the folder to lock.</param>
     /// <returns>Information about the locked folder.</returns>
@@ -73,14 +71,17 @@ public class FolderLocker
             }
 
             // Check if already locked
-            if (AclHelper.IsAccessDenied(folderPath))
+            if (HasLockMarker(folderPath))
             {
                 info.State = FolderState.Locked;
                 return info;
             }
 
-            // Create a lock marker file with encrypted content
+            // Create a lock marker file first
             await CreateLockMarkerAsync(folderPath);
+
+            // Encrypt all files in the folder recursively
+            await EncryptFolderContentsAsync(folderPath);
 
             // Apply ACL to deny access
             AclHelper.DenyAccess(folderPath);
@@ -97,7 +98,7 @@ public class FolderLocker
     }
 
     /// <summary>
-    /// Unlocks a folder by removing ACL restrictions.
+    /// Unlocks a folder by decrypting all files and removing ACL restrictions.
     /// </summary>
     /// <param name="folderPath">Path to the folder to unlock.</param>
     /// <returns>Information about the unlocked folder.</returns>
@@ -118,14 +119,17 @@ public class FolderLocker
             }
 
             // Check if already unlocked
-            if (!AclHelper.IsAccessDenied(folderPath))
+            if (!HasLockMarker(folderPath))
             {
                 info.State = FolderState.Unlocked;
                 return info;
             }
 
-            // Remove ACL restrictions
+            // Remove ACL restrictions first
             AclHelper.AllowAccess(folderPath);
+
+            // Decrypt all files in the folder recursively
+            await DecryptFolderContentsAsync(folderPath);
 
             // Remove lock marker
             await RemoveLockMarkerAsync(folderPath);
@@ -151,7 +155,7 @@ public class FolderLocker
         if (!Directory.Exists(folderPath))
             return FolderState.Unknown;
 
-        return AclHelper.IsAccessDenied(folderPath) ? FolderState.Locked : FolderState.Unlocked;
+        return HasLockMarker(folderPath) ? FolderState.Locked : FolderState.Unlocked;
     }
 
     /// <summary>
@@ -185,6 +189,129 @@ public class FolderLocker
         {
             File.Delete(markerPath);
         }
+        return Task.CompletedTask;
+    }
+
+    /// <summary>
+    /// Encrypts all files in a folder recursively.
+    /// </summary>
+    private async Task EncryptFolderContentsAsync(string folderPath)
+    {
+        if (_masterKey == null || _masterIV == null)
+            await InitializeAsync();
+
+        // Get all files recursively, excluding the lock marker
+        var files = Directory.GetFiles(folderPath, "*", SearchOption.AllDirectories)
+            .Where(f => !f.EndsWith(".gamelocker") && !f.EndsWith(".enc"))
+            .ToArray();
+
+        foreach (var filePath in files)
+        {
+            try
+            {
+                await EncryptFileAsync(filePath);
+            }
+            catch (Exception ex)
+            {
+                // Log but continue with other files
+                Console.WriteLine($"Failed to encrypt {filePath}: {ex.Message}");
+            }
+        }
+    }
+
+    /// <summary>
+    /// Decrypts all encrypted files in a folder recursively.
+    /// </summary>
+    private async Task DecryptFolderContentsAsync(string folderPath)
+    {
+        if (_masterKey == null || _masterIV == null)
+            await InitializeAsync();
+
+        // Get all encrypted files recursively
+        var encryptedFiles = Directory.GetFiles(folderPath, "*.enc", SearchOption.AllDirectories);
+
+        foreach (var encryptedPath in encryptedFiles)
+        {
+            try
+            {
+                await DecryptFileAsync(encryptedPath);
+            }
+            catch (Exception ex)
+            {
+                // Log but continue with other files
+                Console.WriteLine($"Failed to decrypt {encryptedPath}: {ex.Message}");
+            }
+        }
+    }
+
+    /// <summary>
+    /// Encrypts a single file by replacing it with an encrypted version.
+    /// Uses streaming for large files to handle files over 2GB.
+    /// </summary>
+    private Task EncryptFileAsync(string filePath)
+    {
+        if (_masterKey == null || _masterIV == null)
+            throw new InvalidOperationException("Encryption keys not initialized");
+
+        var fileInfo = new FileInfo(filePath);
+        var encryptedPath = filePath + ".enc";
+
+        try
+        {
+            // Use streaming encryption for large files
+            using var sourceStream = File.OpenRead(filePath);
+            using var destStream = File.Create(encryptedPath);
+            
+            AesEncryptionHelper.EncryptStream(sourceStream, destStream, _masterKey, _masterIV);
+            
+            // Delete original file after successful encryption
+            File.Delete(filePath);
+            
+            // Set encrypted file as hidden
+            File.SetAttributes(encryptedPath, FileAttributes.Hidden);
+        }
+        catch (Exception ex)
+        {
+            // Clean up partial encrypted file on failure
+            if (File.Exists(encryptedPath))
+                File.Delete(encryptedPath);
+            throw new Exception($"Failed to encrypt {filePath}: {ex.Message}", ex);
+        }
+        
+        return Task.CompletedTask;
+    }
+
+    /// <summary>
+    /// Decrypts a single .enc file by replacing it with the decrypted version.
+    /// Uses streaming for large files to handle files over 2GB.
+    /// </summary>
+    private Task DecryptFileAsync(string encryptedPath)
+    {
+        if (_masterKey == null || _masterIV == null)
+            throw new InvalidOperationException("Encryption keys not initialized");
+
+        // Determine original file path (remove .enc extension)
+        var originalPath = encryptedPath.Substring(0, encryptedPath.Length - 4);
+
+        try
+        {
+            // Use streaming decryption for large files
+            using var sourceStream = File.OpenRead(encryptedPath);
+            using var destStream = File.Create(originalPath);
+            
+            AesEncryptionHelper.DecryptStream(sourceStream, destStream, _masterKey, _masterIV);
+            
+            // Delete encrypted file after successful decryption
+            File.Delete(encryptedPath);
+        }
+        catch (Exception ex)
+        {
+            // Clean up partial decrypted file on failure
+            if (File.Exists(originalPath))
+                File.Delete(originalPath);
+            throw new Exception($"Failed to decrypt {encryptedPath}: {ex.Message}", ex);
+        }
+        
         return Task.CompletedTask;
     }
 }

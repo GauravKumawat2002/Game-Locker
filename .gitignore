@@ -60,3 +60,50 @@ installer/bin/
 installer/obj/
 *.msi
 *.wixpdb
+
+# Installer packages and distributions
+installer-package/
+GameLocker-Installer-*.zip
+GameLocker-Setup-*.exe
+*.msm
+*.cab
+
+# Temporary files
+*.tmp
+*.temp
+*.bak
+*.swp
+*.swo
+*~
+
+# Log files
+*.log
+*.log.*
+logs/
+
+# Configuration files with sensitive data
+appsettings.Production.json
+appsettings.Staging.json
+*.secrets.json
+
+# Runtime files
+*.pid
+*.seed
+*.pid.lock
+
+# Coverage directory used by tools like istanbul
+coverage/
+
+# PowerShell validation scripts (generated)
+Test-*.ps1
+Quick-Test.ps1
+Validate-*.ps1
+
+# Windows installer files
+*.msi
+*.msix
+*.appx
+
+# Game folder test data (if any)
+test-games/
+sample-folders/

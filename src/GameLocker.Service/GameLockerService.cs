@@ -17,6 +17,7 @@ public sealed class GameLockerService : BackgroundService
     
     private GameLockerConfig? _config;
     private bool _wasWithinAllowedTime = false;
+    private bool _isFirstRun = true;
     private DateTime? _lastWarningTime = null;
 
     public GameLockerService(ILogger<GameLockerService> logger)
@@ -124,8 +125,8 @@ public sealed class GameLockerService : BackgroundService
         _logger.LogDebug("Schedule check at {Time}: AllowedTime={IsAllowed}", 
             now, isWithinAllowedTime);
 
-        // Check if state changed
-        if (isWithinAllowedTime != _wasWithinAllowedTime)
+        // Check if state changed or if this is the first run
+        if (_isFirstRun || isWithinAllowedTime != _wasWithinAllowedTime)
         {
             if (isWithinAllowedTime)
             {
@@ -139,6 +140,7 @@ public sealed class GameLockerService : BackgroundService
             }
 
             _wasWithinAllowedTime = isWithinAllowedTime;
+            _isFirstRun = false;
         }
         else if (isWithinAllowedTime)
         {

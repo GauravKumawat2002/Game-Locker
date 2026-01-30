@@ -1,0 +1,103 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+  <Product Id="*" Name="GameLocker" Language="1033" Version="1.0.0.0" Manufacturer="GameLocker Inc" UpgradeCode="12345678-1234-1234-1234-123456789012">
+    <Package InstallerVersion="200" Compressed="yes" InstallScope="perMachine" />
+
+    <MajorUpgrade DowngradeErrorMessage="A newer version of [ProductName] is already installed." />
+    <MediaTemplate />
+
+    <Feature Id="ProductFeature" Title="GameLocker" Level="1">
+      <ComponentGroupRef Id="ProductComponents" />
+      <ComponentRef Id="GameLockerService" />
+      <ComponentRef Id="ConfigUI" />
+      <ComponentRef Id="CreateDataDirectory" />
+    </Feature>
+
+    <!-- UI -->
+    <UI>
+      <UIRef Id="WixUI_InstallDir" />
+    </UI>
+    <Property Id="WIXUI_INSTALLDIR" Value="INSTALLFOLDER" />
+
+    <!-- Custom actions for service installation -->
+    <CustomAction Id="InstallService" Directory="INSTALLFOLDER" Execute="deferred" Impersonate="no"
+                  ExeCommand="[SystemFolder]sc.exe create &quot;GameLocker Service&quot; binpath= &quot;[INSTALLFOLDER]GameLocker.Service.exe&quot; start= auto" />
+    
+    <CustomAction Id="StartService" Directory="INSTALLFOLDER" Execute="deferred" Impersonate="no"
+                  ExeCommand="[SystemFolder]sc.exe start &quot;GameLocker Service&quot;" />
+    
+    <CustomAction Id="StopService" Directory="INSTALLFOLDER" Execute="deferred" Impersonate="no"
+                  ExeCommand="[SystemFolder]sc.exe stop &quot;GameLocker Service&quot;" />
+                  
+    <CustomAction Id="DeleteService" Directory="INSTALLFOLDER" Execute="deferred" Impersonate="no"
+                  ExeCommand="[SystemFolder]sc.exe delete &quot;GameLocker Service&quot;" />
+
+    <!-- Register event log source -->
+    <CustomAction Id="RegisterEventSource" Directory="INSTALLFOLDER" Execute="deferred" Impersonate="no"
+                  ExeCommand="[SystemFolder]WindowsPowerShell\v1.0\powershell.exe -Command &quot;New-EventLog -LogName Application -Source 'GameLocker Service' -ErrorAction SilentlyContinue&quot;" />
+
+    <!-- Installation sequence -->
+    <InstallExecuteSequence>
+      <Custom Action="RegisterEventSource" After="InstallFiles">NOT Installed</Custom>
+      <Custom Action="InstallService" After="RegisterEventSource">NOT Installed</Custom>
+      <Custom Action="StartService" After="InstallService">NOT Installed</Custom>
+      <Custom Action="StopService" Before="DeleteService">Installed AND REMOVE="ALL"</Custom>
+      <Custom Action="DeleteService" Before="RemoveFiles">Installed AND REMOVE="ALL"</Custom>
+    </InstallExecuteSequence>
+  </Product>
+
+  <Fragment>
+    <Directory Id="TARGETDIR" Name="SourceDir">
+      <Directory Id="ProgramFilesFolder">
+        <Directory Id="INSTALLFOLDER" Name="GameLocker" />
+      </Directory>
+      <Directory Id="ProgramDataFolder">
+        <Directory Id="GAMELOCKERDATAFOLDER" Name="GameLocker" />
+      </Directory>
+    </Directory>
+  </Fragment>
+
+  <Fragment>
+    <ComponentGroup Id="ProductComponents" Directory="INSTALLFOLDER">
+      <!-- Service executable and dependencies -->
+      <Component Id="GameLockerService" Guid="*">
+        <File Id="GameLockerServiceExe" Source="$(var.PublishDir)\GameLocker.Service.exe" KeyPath="yes" />
+        <File Id="GameLockerServiceDeps" Source="$(var.PublishDir)\GameLocker.Service.deps.json" />
+        <File Id="GameLockerServiceRuntimeConfig" Source="$(var.PublishDir)\GameLocker.Service.runtimeconfig.json" />
+        <File Id="GameLockerCommonDll" Source="$(var.PublishDir)\GameLocker.Common.dll" />
+      </Component>
+
+      <!-- Config UI -->
+      <Component Id="ConfigUI" Guid="*">
+        <File Id="GameLockerConfigUIExe" Source="$(var.PublishDir)\GameLocker.ConfigUI.exe" KeyPath="yes" />
+        <File Id="GameLockerConfigUIDeps" Source="$(var.PublishDir)\GameLocker.ConfigUI.deps.json" />
+        <File Id="GameLockerConfigUIRuntimeConfig" Source="$(var.PublishDir)\GameLocker.ConfigUI.runtimeconfig.json" />
+        <!-- Desktop shortcut -->
+        <Shortcut Id="ConfigUIDesktopShortcut" Directory="DesktopFolder" Name="GameLocker Configuration" 
+                  Target="[#GameLockerConfigUIExe]" WorkingDirectory="INSTALLFOLDER" />
+        <!-- Start menu shortcut -->
+        <Shortcut Id="ConfigUIStartMenuShortcut" Directory="ProgramMenuDir" Name="GameLocker Configuration" 
+                  Target="[#GameLockerConfigUIExe]" WorkingDirectory="INSTALLFOLDER" />
+      </Component>
+
+      <!-- Create data directory -->
+      <Component Id="CreateDataDirectory" Guid="*">
+        <CreateFolder Directory="GAMELOCKERDATAFOLDER" />
+        <util:PermissionEx Id="DataDirPermissions" GenericAll="yes" User="Administrators" />
+        <util:PermissionEx Id="DataDirSystemPermissions" GenericAll="yes" User="SYSTEM" />
+      </Component>
+    </ComponentGroup>
+  </Fragment>
+
+  <Fragment>
+    <Directory Id="TARGETDIR" Name="SourceDir">
+      <Directory Id="ProgramMenuFolder">
+        <Directory Id="ProgramMenuDir" Name="GameLocker" />
+      </Directory>
+      <Directory Id="DesktopFolder" Name="Desktop" />
+    </Directory>
+  </Fragment>
+
+  <!-- Include WiX utilities -->
+  <?include $(sys.CURRENTDIR)\WixUtilExtension.wxi ?>
+</Wix>

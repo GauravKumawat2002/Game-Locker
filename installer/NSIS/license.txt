@@ -1,0 +1,16 @@
+GameLocker End User License Agreement (EULA)
+
+This software is provided "as is" for personal use only.
+
+By installing this software, you agree to:
+
+1. Use this software at your own risk
+2. Not hold the developer liable for any damages
+3. Use this software for personal, non-commercial purposes only
+
+The software modifies file permissions and encrypts files to enforce gaming schedules.
+Make sure you have backups of your important files.
+
+Installation requires administrator privileges to install the Windows service.
+
+Press "I Agree" to continue with the installation.

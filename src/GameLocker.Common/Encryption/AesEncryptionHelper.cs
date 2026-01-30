@@ -138,4 +138,75 @@ public static class AesEncryptionHelper
         await File.WriteAllBytesAsync(destPath, decryptedData);
         return destPath;
     }
+
+    /// <summary>
+    /// Encrypts a stream using AES-256 CBC mode.
+    /// Suitable for large files that don't fit in memory.
+    /// </summary>
+    /// <param name="input">Source stream to encrypt.</param>
+    /// <param name="output">Destination stream for encrypted data.</param>
+    /// <param name="key">The AES-256 key (32 bytes).</param>
+    /// <param name="iv">The initialization vector (16 bytes).</param>
+    public static void EncryptStream(Stream input, Stream output, byte[] key, byte[] iv)
+    {
+        ArgumentNullException.ThrowIfNull(input);
+        ArgumentNullException.ThrowIfNull(output);
+        ArgumentNullException.ThrowIfNull(key);
+        ArgumentNullException.ThrowIfNull(iv);
+
+        if (key.Length != 32)
+            throw new ArgumentException("Key must be 32 bytes for AES-256.", nameof(key));
+        if (iv.Length != IvSize)
+            throw new ArgumentException($"IV must be {IvSize} bytes.", nameof(iv));
+
+        using var aes = Aes.Create();
+        aes.KeySize = KeySize;
+        aes.BlockSize = BlockSize;
+        aes.Mode = CipherMode.CBC;
+        aes.Padding = PaddingMode.PKCS7;
+        aes.Key = key;
+        aes.IV = iv;
+
+        using var encryptor = aes.CreateEncryptor();
+        using var cs = new CryptoStream(output, encryptor, CryptoStreamMode.Write);
+        
+        const int bufferSize = 64 * 1024; // 64KB buffer
+        input.CopyTo(cs, bufferSize);
+        cs.FlushFinalBlock();
+    }
+
+    /// <summary>
+    /// Decrypts a stream using AES-256 CBC mode.
+    /// Suitable for large files that don't fit in memory.
+    /// </summary>
+    /// <param name="input">Source stream to decrypt.</param>
+    /// <param name="output">Destination stream for decrypted data.</param>
+    /// <param name="key">The AES-256 key (32 bytes).</param>
+    /// <param name="iv">The initialization vector (16 bytes).</param>
+    public static void DecryptStream(Stream input, Stream output, byte[] key, byte[] iv)
+    {
+        ArgumentNullException.ThrowIfNull(input);
+        ArgumentNullException.ThrowIfNull(output);
+        ArgumentNullException.ThrowIfNull(key);
+        ArgumentNullException.ThrowIfNull(iv);
+
+        if (key.Length != 32)
+            throw new ArgumentException("Key must be 32 bytes for AES-256.", nameof(key));
+        if (iv.Length != IvSize)
+            throw new ArgumentException($"IV must be {IvSize} bytes.", nameof(iv));
+
+        using var aes = Aes.Create();
+        aes.KeySize = KeySize;
+        aes.BlockSize = BlockSize;
+        aes.Mode = CipherMode.CBC;
+        aes.Padding = PaddingMode.PKCS7;
+        aes.Key = key;
+        aes.IV = iv;
+
+        using var decryptor = aes.CreateDecryptor();
+        using var cs = new CryptoStream(input, decryptor, CryptoStreamMode.Read);
+        
+        const int bufferSize = 64 * 1024; // 64KB buffer
+        cs.CopyTo(output, bufferSize);
+    }
 }
