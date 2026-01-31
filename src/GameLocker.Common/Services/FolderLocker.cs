@@ -314,4 +314,119 @@ public class FolderLocker
         
         return Task.CompletedTask;
     }
+
+    /// <summary>
+    /// Locks a folder using per-folder extension settings with dynamic file type discovery.
+    /// </summary>
+    /// <param name="folderPath">Path to the folder to lock.</param>
+    /// <param name="folderSettings">Per-folder encryption settings with user-selected extensions.</param>
+    /// <returns>Information about the locked folder.</returns>
+    public async Task<GameFolderInfo> LockFolderWithCustomExtensionsAsync(string folderPath, FolderEncryptionSettings folderSettings)
+    {
+        var info = new GameFolderInfo
+        {
+            Path = folderPath,
+            State = FolderState.Unknown
+        };
+
+        try
+        {
+            if (!Directory.Exists(folderPath))
+            {
+                info.LastError = "Folder does not exist.";
+                return info;
+            }
+
+            // Check if already locked
+            if (HasLockMarker(folderPath))
+            {
+                info.State = FolderState.Locked;
+                return info;
+            }
+
+            // Create a lock marker file first
+            await CreateLockMarkerAsync(folderPath);
+
+            // Use per-folder extension settings for precise encryption control
+            await EncryptFolderWithCustomExtensionsAsync(folderPath, folderSettings);
+
+            // Apply ACL to deny access
+            AclHelper.DenyAccess(folderPath);
+
+            info.State = FolderState.Locked;
+            info.LastStateChange = DateTime.Now;
+        }
+        catch (Exception ex)
+        {
+            info.LastError = ex.Message;
+        }
+
+        return info;
+    }
+
+    /// <summary>
+    /// Encrypts files in a folder using per-folder custom extension selection.
+    /// Only encrypts the specific file extensions the user selected for this folder.
+    /// </summary>
+    /// <param name="folderPath">Path to the folder to encrypt</param>
+    /// <param name="folderSettings">Per-folder settings with user-selected extensions</param>
+    public async Task EncryptFolderWithCustomExtensionsAsync(string folderPath, FolderEncryptionSettings folderSettings)
+    {
+        if (_masterKey == null || _masterIV == null)
+            await InitializeAsync();
+
+        // Get all files recursively, excluding the lock marker and already encrypted files
+        var files = Directory.GetFiles(folderPath, "*", SearchOption.AllDirectories)
+            .Where(f => !f.EndsWith(".gamelocker") && !f.EndsWith(".enc"))
+            .ToArray();
+
+        var filesToEncrypt = files.Where(f => folderSettings.ShouldEncryptFile(Path.GetFileName(f))).ToArray();
+        var skippedFiles = files.Except(filesToEncrypt).ToArray();
+
+        Console.WriteLine($"Per-Folder Encryption Summary for {Path.GetFileName(folderPath)}:");
+        Console.WriteLine($"- Total files found: {files.Length}");
+        Console.WriteLine($"- Files to encrypt: {filesToEncrypt.Length}");
+        Console.WriteLine($"- Files to skip: {skippedFiles.Length}");
+        Console.WriteLine($"- Configuration: {folderSettings.GetEncryptionSummary()}");
+
+        // Show which extensions are being encrypted
+        if (folderSettings.UseCustomSelection && folderSettings.SelectedExtensions.Count > 0)
+        {
+            Console.WriteLine($"- Selected extensions: {string.Join(", ", folderSettings.SelectedExtensions)}");
+        }
+
+        foreach (var filePath in filesToEncrypt)
+        {
+            try
+            {
+                await EncryptFileAsync(filePath);
+            }
+            catch (Exception ex)
+            {
+                // Log but continue with other files
+                Console.WriteLine($"Failed to encrypt {filePath}: {ex.Message}");
+            }
+        }
+
+        // Log some examples of files that were skipped
+        if (skippedFiles.Length > 0)
+        {
+            Console.WriteLine($"\nSkipped files (user did not select these extensions):");
+            var skippedByExtension = skippedFiles
+                .GroupBy(f => Path.GetExtension(f).ToLowerInvariant())
+                .OrderByDescending(g => g.Count())
+                .Take(5);
+
+            foreach (var group in skippedByExtension)
+            {
+                var examples = string.Join(", ", group.Take(2).Select(Path.GetFileName));
+                Console.WriteLine($"- {group.Key} ({group.Count()} files): {examples}");
+            }
+
+            if (skippedByExtension.Count() > 5)
+            {
+                Console.WriteLine($"- ... and more extension types");
+            }
+        }
+    }
 }

@@ -45,6 +45,19 @@ public class GameLockerConfig
     public bool NotificationsEnabled { get; set; } = true;
 
     /// <summary>
+    /// Selective encryption settings - only encrypt specific file types instead of everything
+    /// </summary>
+    [JsonPropertyName("encryptionSettings")]
+    public SelectiveEncryptionSettings EncryptionSettings { get; set; } = new SelectiveEncryptionSettings();
+
+    /// <summary>
+    /// Per-folder encryption settings with user-selected file extensions.
+    /// Each game folder can have its own custom extension selection.
+    /// </summary>
+    [JsonPropertyName("folderEncryptionSettings")]
+    public List<FolderEncryptionSettings> FolderEncryptionSettings { get; set; } = new();
+
+    /// <summary>
     /// Checks if the current time is within the allowed gaming window.
     /// </summary>
     /// <param name="currentTime">The current date and time to check.</param>
@@ -120,5 +133,62 @@ public class GameLockerConfig
         }
 
         return lockDateTime;
+    }
+
+    /// <summary>
+    /// Gets the encryption settings for a specific folder path.
+    /// </summary>
+    /// <param name="folderPath">Path to the game folder</param>
+    /// <returns>Folder encryption settings or null if not configured</returns>
+    public FolderEncryptionSettings? GetFolderEncryptionSettings(string folderPath)
+    {
+        return FolderEncryptionSettings.FirstOrDefault(f => 
+            string.Equals(f.FolderPath, folderPath, StringComparison.OrdinalIgnoreCase));
+    }
+
+    /// <summary>
+    /// Sets or updates encryption settings for a specific folder.
+    /// </summary>
+    /// <param name="settings">The folder encryption settings to save</param>
+    public void SetFolderEncryptionSettings(FolderEncryptionSettings settings)
+    {
+        // Remove existing settings for this folder
+        FolderEncryptionSettings.RemoveAll(f => 
+            string.Equals(f.FolderPath, settings.FolderPath, StringComparison.OrdinalIgnoreCase));
+        
+        // Add the new settings
+        FolderEncryptionSettings.Add(settings);
+    }
+
+    /// <summary>
+    /// Gets the effective encryption settings for a folder (custom or fallback to global preset).
+    /// </summary>
+    /// <param name="folderPath">Path to the game folder</param>
+    /// <returns>Settings to use for encryption, never null</returns>
+    public FolderEncryptionSettings GetEffectiveFolderSettings(string folderPath)
+    {
+        var existing = GetFolderEncryptionSettings(folderPath);
+        if (existing != null)
+        {
+            return existing;
+        }
+
+        // Create default settings with global preset as fallback
+        return new FolderEncryptionSettings
+        {
+            FolderPath = folderPath,
+            UseCustomSelection = false,
+            FallbackPreset = EncryptionSettings
+        };
+    }
+
+    /// <summary>
+    /// Removes encryption settings for a folder (when folder is removed from the list).
+    /// </summary>
+    /// <param name="folderPath">Path to the folder to remove settings for</param>
+    public bool RemoveFolderEncryptionSettings(string folderPath)
+    {
+        return FolderEncryptionSettings.RemoveAll(f => 
+            string.Equals(f.FolderPath, folderPath, StringComparison.OrdinalIgnoreCase)) > 0;
     }
 }
