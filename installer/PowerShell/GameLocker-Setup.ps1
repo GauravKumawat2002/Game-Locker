@@ -45,6 +45,15 @@ param(
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
 
+# Capture script directory at script level (not inside functions)
+$ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Definition
+if ([string]::IsNullOrEmpty($ScriptDir)) {
+    $ScriptDir = $PSScriptRoot
+}
+if ([string]::IsNullOrEmpty($ScriptDir)) {
+    $ScriptDir = (Get-Location).Path
+}
+
 # Global variables
 $ServicePath = Join-Path $InstallPath "Service"
 $ConfigPath = Join-Path $InstallPath "ConfigUI"
@@ -68,24 +77,50 @@ function Test-Administrator {
 }
 
 function Stop-ExistingService {
-    try {
-        $service = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
-        if ($service) {
-            Write-Status "Stopping existing GameLocker service..." "Yellow"
-            if ($service.Status -eq 'Running') {
-                Stop-Service -Name $ServiceName -Force -NoWait
-                Start-Sleep -Seconds 3
+    Write-Status "Checking for existing GameLocker service..." "Cyan"
+    
+    # Check for both possible service names (with and without space)
+    $serviceNames = @($ServiceName, "GameLocker Service", "GameLockerService")
+    
+    foreach ($svcName in $serviceNames) {
+        try {
+            $service = Get-Service -Name $svcName -ErrorAction SilentlyContinue
+            if ($service) {
+                Write-Status "Found existing service '$svcName', removing it..." "Yellow"
+                
+                # Stop the service if running
+                if ($service.Status -eq 'Running') {
+                    Write-Status "Stopping running service..." "Yellow"
+                    Stop-Service -Name $svcName -Force -ErrorAction SilentlyContinue
+                    Start-Sleep -Seconds 3
+                }
+                
+                # Try to delete the service using sc.exe
+                Write-Status "Deleting existing service '$svcName'..." "Yellow"
+                $deleteResult = sc.exe delete "`"$svcName`"" 2>&1
+                
+                # Wait for service to be fully removed
+                $attempts = 0
+                while ($attempts -lt 10) {
+                    $checkService = Get-Service -Name $svcName -ErrorAction SilentlyContinue
+                    if (-not $checkService) {
+                        Write-Status "Service '$svcName' removed successfully" "Green"
+                        break
+                    }
+                    $attempts++
+                    Start-Sleep -Seconds 1
+                }
             }
-            
-            # Uninstall existing service
-            Write-Status "Uninstalling existing service..." "Yellow"
-            sc.exe delete $ServiceName | Out-Null
-            Start-Sleep -Seconds 2
+        }
+        catch {
+            # Ignore errors for individual service name checks
         }
     }
-    catch {
-        Write-Status "Warning: Could not stop existing service: $($_.Exception.Message)" "Yellow"
-    }
+    
+    Write-Status "Service cleanup complete, proceeding with installation" "Gray"
+    
+    # Extra safety: wait a moment before proceeding
+    Start-Sleep -Seconds 2
 }
 
 function Create-Directories {
@@ -103,11 +138,14 @@ function Create-Directories {
 function Copy-Files {
     Write-Status "Copying GameLocker files..." "Cyan"
     
-    $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
-    $publishDir = Split-Path -Parent (Split-Path -Parent $scriptDir)
+    # Use script-level $ScriptDir variable (captured at top of script)
+    # The publish folder is in the same directory as this script
+    $publishDir = Join-Path $ScriptDir "publish"
+    
+    Write-Status "Looking for files in: $publishDir" "Gray"
     
     # Copy service files
-    $serviceSource = Join-Path $publishDir "publish\service"
+    $serviceSource = Join-Path $publishDir "service"
     if (Test-Path $serviceSource) {
         Copy-Item -Path "$serviceSource\*" -Destination $ServicePath -Recurse -Force
         Write-Status "Service files copied to $ServicePath" "Gray"
@@ -116,18 +154,18 @@ function Copy-Files {
     }
     
     # Copy config UI files
-    $configSource = Join-Path $publishDir "publish\configui"
+    $configSource = Join-Path $publishDir "configui"
     if (Test-Path $configSource) {
         Copy-Item -Path "$configSource\*" -Destination $ConfigPath -Recurse -Force
         Write-Status "Config UI files copied to $ConfigPath" "Gray"
     } else {
-        throw "Config UI files not found at $configSource. Please run 'dotnet publish' first."
+        throw "Config UI files not found at $configSource. Please ensure publish folder is next to this script."
     }
     
-    # Copy configuration files
+    # Copy configuration files from service folder (they're already there)
     $configFiles = @("appsettings.json", "appsettings.Development.json")
     foreach ($configFile in $configFiles) {
-        $sourceConfig = Join-Path $publishDir "publish\$configFile"
+        $sourceConfig = Join-Path $serviceSource $configFile
         if (Test-Path $sourceConfig) {
             Copy-Item -Path $sourceConfig -Destination $ServicePath -Force
             Write-Status "Configuration file $configFile copied" "Gray"
@@ -300,18 +338,19 @@ $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
     Write-Status "Uninstall script created at $uninstallPath" "Gray"
 }
 
-function Start-Service {
+function Start-GameLockerService {
     Write-Status "Starting GameLocker service..." "Cyan"
     
     try {
-        Start-Service -Name $ServiceName
+        # Use fully-qualified cmdlet name to avoid infinite recursion
+        Microsoft.PowerShell.Management\Start-Service -Name $ServiceName
         Start-Sleep -Seconds 2
         
-        $service = Get-Service -Name $ServiceName
+        $service = Microsoft.PowerShell.Management\Get-Service -Name $ServiceName
         if ($service.Status -eq 'Running') {
             Write-Status "Service started successfully" "Green"
         } else {
-            Write-Status "Warning: Service may not have started correctly" "Yellow"
+            Write-Status "Warning: Service may not have started correctly. Status: $($service.Status)" "Yellow"
         }
     }
     catch {
@@ -370,7 +409,7 @@ try {
     Set-Permissions
     Create-StartMenuShortcuts
     Create-UninstallScript
-    Start-Service
+    Start-GameLockerService
     
     Show-CompletionMessage
     
