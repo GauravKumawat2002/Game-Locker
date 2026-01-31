@@ -104,19 +104,26 @@ dotnet build -c Release
 ### Create Self-Contained Executables
 
 ```powershell
-# Publish Service
-dotnet publish src/GameLocker.Service -c Release -r win-x64 --self-contained -o publish/service
+# EASIEST: Use the build script
+.\\Build-Installer.ps1 -BuildType Both
 
-# Publish ConfigUI
-dotnet publish src/GameLocker.ConfigUI -c Release -r win-x64 --self-contained -o publish/configui
+# OR manually:
+# Publish Service (with .NET Runtime)
+dotnet publish src/GameLocker.Service -c Release -r win-x64 --self-contained true -o installer-package/publish/service
+
+# Publish ConfigUI (with .NET Runtime)
+dotnet publish src/GameLocker.ConfigUI -c Release -r win-x64 --self-contained true -o installer-package/publish/configui
 ```
 
 ### Create Installer Package
 
 ```powershell
-# After publishing, create installer package
-cd installer/PowerShell
-powershell -ExecutionPolicy Bypass -File "Package-Installer.ps1"
+# Use the automated build script (recommended)
+.\\Build-Installer.ps1 -BuildType ZIP    # PowerShell-based installer
+.\\Build-Installer.ps1 -BuildType EXE    # GUI installer (requires Inno Setup)
+.\\Build-Installer.ps1 -BuildType Both   # Create both installers
+
+# See installer/README.md for detailed setup instructions
 ```
 
 ---

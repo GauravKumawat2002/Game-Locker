@@ -21,10 +21,11 @@ A Windows system service + configuration UI application that enforces a **game a
 
 ### 📦 **Complete Installer Package**
 
-- **🚀 One-Click Installation**: Professional PowerShell installer
-- **📋 Self-Contained**: Includes .NET 8.0 runtime (~161 MB)
+- **🚀 One-Click Installation**: Professional installer (ZIP or GUI EXE)
+- **📋 Self-Contained**: Includes .NET 8.0 runtime (~115 MB)
 - **🔧 Service Auto-Setup**: Automatic Windows Service configuration
 - **📱 Start Menu Integration**: Easy access shortcuts
+- **🎨 Build Automation**: Build-Installer.ps1 script for easy releases
 
 ### 🎯 **Quick Start**
 
@@ -106,7 +107,7 @@ GameLocker/
 1. **Download** the installer package:
 
     ```
-    GameLocker-Installer-v1.0.zip (~161 MB)
+    GameLocker-Installer-v1.1.0.zip (~115 MB, includes .NET 8.0 Runtime)
     ```
 
 2. **Extract** to any temporary folder
@@ -316,13 +317,16 @@ dotnet run --project src/GameLocker.Service
 **4. Build Complete Installer:**
 
 ```powershell
-# Build release versions
-dotnet publish src/GameLocker.Service -c Release -r win-x64 --self-contained -o publish/service
-dotnet publish src/GameLocker.ConfigUI -c Release -r win-x64 --self-contained -o publish/configui
+# Use the automated build script (EASIEST!)
+.\Build-Installer.ps1 -BuildType Both
 
-# Create installer package
-cd installer/PowerShell
-powershell -ExecutionPolicy Bypass -File "Package-Installer.ps1"
+# OR manually:
+dotnet publish src/GameLocker.Service -c Release -r win-x64 --self-contained true -o installer-package/publish/service
+dotnet publish src/GameLocker.ConfigUI -c Release -r win-x64 --self-contained true -o installer-package/publish/configui
+
+# The script creates:
+# - GameLocker-Installer-v1.1.0.zip (PowerShell-based, ~115 MB)
+# - GameLocker-Installer-v1.1.0.exe (GUI installer, requires Inno Setup)
 ```
 
 ### **Development Tools**
