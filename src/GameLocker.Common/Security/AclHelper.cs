@@ -9,7 +9,8 @@ namespace GameLocker.Common.Security;
 public static class AclHelper
 {
     /// <summary>
-    /// Denies access to a folder for all non-admin users.
+    /// Denies access to a folder for all non-admin users while preserving SYSTEM access.
+    /// IMPORTANT: SYSTEM must retain access so the service can manage locked folders.
     /// </summary>
     /// <param name="folderPath">The path to the folder.</param>
     public static void DenyAccess(string folderPath)
@@ -27,24 +28,39 @@ public static class AclHelper
         if (userSid == null)
             throw new InvalidOperationException("Could not get current user SID.");
 
+        // CRITICAL: Get SYSTEM account SID - the service runs as SYSTEM and must retain access
+        var systemSid = new SecurityIdentifier(WellKnownSidType.LocalSystemSid, null);
+        var adminsSid = new SecurityIdentifier(WellKnownSidType.BuiltinAdministratorsSid, null);
+
         // Get various user groups to deny
         var usersGroup = new SecurityIdentifier(WellKnownSidType.BuiltinUsersSid, null);
         var authenticatedUsers = new SecurityIdentifier(WellKnownSidType.AuthenticatedUserSid, null);
-        var everyone = new SecurityIdentifier(WellKnownSidType.WorldSid, null);
 
-        // Add comprehensive deny rules that completely block access
+        // FIRST: Add explicit ALLOW rule for SYSTEM so it can still manage the folder
+        // This MUST be added BEFORE deny rules because deny rules take precedence by default
+        var systemAllowRule = new FileSystemAccessRule(
+            systemSid,
+            FileSystemRights.FullControl,
+            InheritanceFlags.ContainerInherit | InheritanceFlags.ObjectInherit,
+            PropagationFlags.None,
+            AccessControlType.Allow);
+        security.SetAccessRule(systemAllowRule);
+
+        // Also ensure Administrators can access
+        var adminsAllowRule = new FileSystemAccessRule(
+            adminsSid,
+            FileSystemRights.FullControl,
+            InheritanceFlags.ContainerInherit | InheritanceFlags.ObjectInherit,
+            PropagationFlags.None,
+            AccessControlType.Allow);
+        security.SetAccessRule(adminsAllowRule);
+
+        // Add deny rules for regular users - but NOT Everyone (which includes SYSTEM)
         var denyRules = new[]
         {
             // Deny all access to Users group
             new FileSystemAccessRule(
                 usersGroup,
-                FileSystemRights.FullControl,
-                InheritanceFlags.ContainerInherit | InheritanceFlags.ObjectInherit,
-                PropagationFlags.None,
-                AccessControlType.Deny),
-            // Deny all access to Everyone
-            new FileSystemAccessRule(
-                everyone,
                 FileSystemRights.FullControl,
                 InheritanceFlags.ContainerInherit | InheritanceFlags.ObjectInherit,
                 PropagationFlags.None,
@@ -96,19 +112,12 @@ public static class AclHelper
         // Get various user groups to restore access
         var usersGroup = new SecurityIdentifier(WellKnownSidType.BuiltinUsersSid, null);
         var authenticatedUsers = new SecurityIdentifier(WellKnownSidType.AuthenticatedUserSid, null);
-        var everyone = new SecurityIdentifier(WellKnownSidType.WorldSid, null);
 
         // Remove all deny rules we added
         var denyRulesToRemove = new[]
         {
             new FileSystemAccessRule(
                 usersGroup,
-                FileSystemRights.FullControl,
-                InheritanceFlags.ContainerInherit | InheritanceFlags.ObjectInherit,
-                PropagationFlags.None,
-                AccessControlType.Deny),
-            new FileSystemAccessRule(
-                everyone,
                 FileSystemRights.FullControl,
                 InheritanceFlags.ContainerInherit | InheritanceFlags.ObjectInherit,
                 PropagationFlags.None,
