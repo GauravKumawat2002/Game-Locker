@@ -17,23 +17,22 @@ This guide will help you set up your development environment and start contribut
 
 ### Required Software
 
-| Software | Version | Purpose |
-|----------|---------|---------|
-| **.NET SDK** | 8.0+ | Build and run the application |
-| **Windows** | 10/11 (64-bit) | Required for NTFS ACL and DPAPI |
-| **Git** | Latest | Version control |
-| **PowerShell** | 5.1+ | Installer scripts |
+| Software       | Version        | Purpose                         |
+| -------------- | -------------- | ------------------------------- |
+| **.NET SDK**   | 8.0+           | Build and run the application   |
+| **Windows**    | 10/11 (64-bit) | Required for NTFS ACL and DPAPI |
+| **Git**        | Latest         | Version control                 |
+| **PowerShell** | 5.1+           | Installer scripts               |
 
 ### Recommended IDE
 
 - **Visual Studio 2022** (Community or higher)
-  - Workload: ".NET Desktop Development"
-  
+    - Workload: ".NET Desktop Development"
 - **Visual Studio Code** with extensions:
-  - C# Dev Kit
-  - C#
-  - .NET Install Tool
-  - PowerShell
+    - C# Dev Kit
+    - C#
+    - .NET Install Tool
+    - PowerShell
 
 ### Verify Installation
 
@@ -237,33 +236,34 @@ Manage the Windows Service easily:
 ### Adding a New Feature
 
 1. **Create a branch**
-   ```powershell
-   git checkout -b feature/your-feature-name
-   ```
+
+    ```powershell
+    git checkout -b feature/your-feature-name
+    ```
 
 2. **Implement in GameLocker.Common** (if shared logic)
-   - Add models to `Models/`
-   - Add services to `Services/`
-   - Add helpers to appropriate folders
+    - Add models to `Models/`
+    - Add services to `Services/`
+    - Add helpers to appropriate folders
 
 3. **Update the UI** (if user-facing)
-   - Modify `Form1.cs` for logic
-   - Modify `Form1.Designer.cs` for UI elements
+    - Modify `Form1.cs` for logic
+    - Modify `Form1.Designer.cs` for UI elements
 
 4. **Update the Service** (if automation needed)
-   - Modify `GameLockerService.cs`
+    - Modify `GameLockerService.cs`
 
 5. **Test thoroughly**
-   - Create a test folder with sample files
-   - Test lock/unlock cycles
-   - Test schedule-based automation
+    - Create a test folder with sample files
+    - Test lock/unlock cycles
+    - Test schedule-based automation
 
 6. **Commit and push**
-   ```powershell
-   git add .
-   git commit -m "feat: add your feature description"
-   git push origin feature/your-feature-name
-   ```
+    ```powershell
+    git add .
+    git commit -m "feat: add your feature description"
+    git push origin feature/your-feature-name
+    ```
 
 ### Testing Encryption
 
@@ -305,12 +305,12 @@ Get-EventLog -LogName Application -Source "GameLocker*" -Newest 50
 
 ```json
 {
-  "Logging": {
-    "LogLevel": {
-      "Default": "Information",
-      "Microsoft.Hosting.Lifetime": "Information"
-    }
-  }
+	"Logging": {
+		"LogLevel": {
+			"Default": "Information",
+			"Microsoft.Hosting.Lifetime": "Information"
+		}
+	}
 }
 ```
 
@@ -330,12 +330,14 @@ C:\ProgramData\GameLocker\
 ### Build Errors
 
 **Error: Target framework not found**
+
 ```powershell
 # Install .NET 8.0 SDK
 winget install Microsoft.DotNet.SDK.8
 ```
 
 **Error: Windows SDK not found**
+
 ```powershell
 # Install Windows 10 SDK
 # Visual Studio Installer → Modify → Individual Components → Windows 10 SDK
@@ -344,17 +346,20 @@ winget install Microsoft.DotNet.SDK.8
 ### Runtime Errors
 
 **Error: Access denied when locking folder**
+
 - Run as Administrator
 - Ensure folder is on NTFS partition
 - Check no files are in use
 
 **Error: Encryption keys not found**
+
 - Keys are stored per-machine
 - Run `dotnet run --project src/GameLocker.ConfigUI` to regenerate
 
 ### Service Issues
 
 **Service won't start**
+
 ```powershell
 # Check event log
 Get-EventLog -LogName Application -Source "GameLocker*" -Newest 10

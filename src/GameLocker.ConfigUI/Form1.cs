@@ -2,6 +2,7 @@ using GameLocker.Common.Configuration;
 using GameLocker.Common.Models;
 using GameLocker.Common.Security;
 using GameLocker.Common.Services;
+using System.ServiceProcess;
 
 namespace GameLocker.ConfigUI;
 
@@ -132,7 +133,7 @@ public partial class Form1 : Form
         }
     }
 
-    private void btnAddFolder_Click(object sender, EventArgs e)
+    private async void btnAddFolder_Click(object sender, EventArgs e)
     {
         using var dialog = new FolderBrowserDialog
         {
@@ -158,7 +159,10 @@ public partial class Form1 : Form
                 // Auto-select the newly added folder
                 lstFolders.SelectedItem = dialog.SelectedPath;
                 
-                ShowStatus($"Added folder: {dialog.SelectedPath}", false);
+                ShowStatus($"Added folder: {dialog.SelectedPath}. Checking service status...", false);
+                
+                // Check if service is running and apply configuration immediately
+                await TriggerImmediateFolderProcessingAsync("add", dialog.SelectedPath);
             }
             else
             {
@@ -167,24 +171,242 @@ public partial class Form1 : Form
         }
     }
 
-    private void btnRemoveFolder_Click(object sender, EventArgs e)
+    private async void btnRemoveFolder_Click(object sender, EventArgs e)
     {
         if (lstFolders.SelectedIndex >= 0)
         {
             var removed = lstFolders.SelectedItem?.ToString();
             if (!string.IsNullOrEmpty(removed))
             {
-                _folderSettings.Remove(removed);
+                var result = MessageBox.Show(
+                    $"Are you sure you want to remove '{removed}' from GameLocker?\n\n" +
+                    "This will decrypt all files in the folder and restore normal access permissions.\n" +
+                    "The decryption process may take some time depending on the number and size of files.",
+                    "Remove Folder",
+                    MessageBoxButtons.YesNo,
+                    MessageBoxIcon.Question);
+
+                if (result == DialogResult.Yes)
+                {
+                    await DecryptAndRemoveFolderAsync(removed);
+                }
             }
-            lstFolders.Items.RemoveAt(lstFolders.SelectedIndex);
-            clbExtensions.Items.Clear();
-            lblExtensionInfo.Text = "Select a folder to view file types";
-            ShowStatus($"Removed folder: {removed}", false);
         }
         else
         {
             ShowStatus("Select a folder to remove.", true);
         }
+    }
+    
+    /// <summary>
+    /// Decrypts all files in a folder and removes it from the configuration.
+    /// Shows a progress dialog with live updates.
+    /// </summary>
+    private async Task DecryptAndRemoveFolderAsync(string folderPath)
+    {
+        // Create a progress form
+        var progressForm = new Form
+        {
+            Text = "Decrypting Files",
+            Width = 550,
+            Height = 220,
+            StartPosition = FormStartPosition.CenterScreen,
+            FormBorderStyle = FormBorderStyle.FixedDialog,
+            MaximizeBox = false,
+            MinimizeBox = false,
+            ControlBox = false,
+            TopMost = true
+        };
+        
+        var lblProgress = new Label
+        {
+            Text = "Initializing decryption...",
+            Location = new Point(20, 20),
+            Size = new Size(500, 25),
+            AutoSize = false,
+            Font = new Font(SystemFonts.DefaultFont.FontFamily, 10, FontStyle.Bold)
+        };
+        
+        var progressBar = new ProgressBar
+        {
+            Location = new Point(20, 50),
+            Size = new Size(500, 30),
+            Style = ProgressBarStyle.Continuous
+        };
+        
+        var lblFile = new Label
+        {
+            Text = "Please wait...",
+            Location = new Point(20, 90),
+            Size = new Size(500, 45),
+            AutoSize = false
+        };
+        
+        var btnClose = new Button
+        {
+            Text = "Close",
+            Location = new Point(225, 145),
+            Size = new Size(100, 35),
+            Enabled = false
+        };
+        
+        bool completed = false;
+        string folderToRemove = folderPath;
+        
+        btnClose.Click += (s, e) => { 
+            if (completed) 
+            {
+                progressForm.DialogResult = DialogResult.OK;
+                progressForm.Close();
+            }
+        };
+        
+        progressForm.Controls.AddRange(new Control[] { lblProgress, progressBar, lblFile, btnClose });
+        
+        // Run the decryption in a background task while showing the form
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                // Initialize FolderLocker
+                string keyStorePath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "GameLocker");
+                var folderLocker = new FolderLocker(keyStorePath);
+                
+                progressForm.Invoke(() => {
+                    lblProgress.Text = "Loading encryption keys...";
+                    lblFile.Text = "Initializing...";
+                });
+                
+                await folderLocker.InitializeAsync();
+                
+                // First, restore ACL permissions
+                progressForm.Invoke(() => {
+                    lblProgress.Text = "Restoring folder permissions...";
+                    lblFile.Text = "Removing access restrictions...";
+                });
+                
+                try
+                {
+                    AclHelper.AllowAccess(folderPath);
+                }
+                catch (Exception ex)
+                {
+                    progressForm.Invoke(() => lblFile.Text = $"ACL warning: {ex.Message}");
+                }
+                
+                // Find all encrypted files (including hidden files)
+                progressForm.Invoke(() => {
+                    lblProgress.Text = "Scanning for encrypted files...";
+                    lblFile.Text = "Looking for .enc files...";
+                });
+                
+                // Use DirectoryInfo to get hidden files too
+                var dirInfo = new DirectoryInfo(folderPath);
+                var encryptedFiles = dirInfo.GetFiles("*.enc", SearchOption.AllDirectories)
+                    .Select(f => f.FullName)
+                    .ToArray();
+                int totalFiles = encryptedFiles.Length;
+                
+                if (totalFiles == 0)
+                {
+                    progressForm.Invoke(() => {
+                        lblProgress.Text = "No encrypted files found.";
+                        lblFile.Text = "Folder was not encrypted or already decrypted.";
+                        progressBar.Style = ProgressBarStyle.Continuous;
+                        progressBar.Value = 100;
+                    });
+                }
+                else
+                {
+                    progressForm.Invoke(() => {
+                        progressBar.Maximum = totalFiles;
+                        progressBar.Value = 0;
+                    });
+                    
+                    int decrypted = 0;
+                    int failed = 0;
+                    
+                    foreach (var encFile in encryptedFiles)
+                    {
+                        try
+                        {
+                            string fileName = Path.GetFileName(encFile);
+                            progressForm.Invoke(() => {
+                                lblProgress.Text = $"Decrypting file {decrypted + failed + 1} of {totalFiles}...";
+                                lblFile.Text = fileName.Length > 60 ? fileName.Substring(0, 57) + "..." : fileName;
+                            });
+                            
+                            // Unhide the file first if it's hidden
+                            var fileInfo = new FileInfo(encFile);
+                            if ((fileInfo.Attributes & FileAttributes.Hidden) == FileAttributes.Hidden)
+                            {
+                                fileInfo.Attributes &= ~FileAttributes.Hidden;
+                            }
+                            
+                            // Decrypt using FolderLocker's public method
+                            await folderLocker.DecryptSingleFileAsync(encFile);
+                            decrypted++;
+                        }
+                        catch (Exception ex)
+                        {
+                            failed++;
+                            Console.WriteLine($"Failed to decrypt {encFile}: {ex.Message}");
+                        }
+                        
+                        int currentProgress = decrypted + failed;
+                        progressForm.Invoke(() => progressBar.Value = currentProgress);
+                    }
+                    
+                    progressForm.Invoke(() => {
+                        if (failed == 0)
+                            lblProgress.Text = $"✓ Successfully decrypted {decrypted} files!";
+                        else
+                            lblProgress.Text = $"Decryption complete: {decrypted} OK, {failed} failed.";
+                    });
+                }
+                
+                // Remove lock marker
+                var markerPath = Path.Combine(folderPath, ".gamelocker");
+                if (File.Exists(markerPath))
+                {
+                    try 
+                    { 
+                        var markerInfo = new FileInfo(markerPath);
+                        markerInfo.Attributes &= ~FileAttributes.Hidden;
+                        File.Delete(markerPath); 
+                    } 
+                    catch { }
+                }
+                
+                progressForm.Invoke(() => {
+                    lblFile.Text = "✓ Folder removed from GameLocker successfully!";
+                    completed = true;
+                    btnClose.Enabled = true;
+                    btnClose.Focus();
+                });
+            }
+            catch (Exception ex)
+            {
+                progressForm.Invoke(() => {
+                    lblProgress.Text = "Error during decryption";
+                    lblFile.Text = ex.Message;
+                    completed = true;
+                    btnClose.Enabled = true;
+                });
+            }
+        });
+        
+        // Show the form modally
+        progressForm.ShowDialog(this);
+        progressForm.Dispose();
+        
+        // After dialog closes, update UI
+        _folderSettings.Remove(folderToRemove);
+        if (lstFolders.Items.Contains(folderToRemove))
+            lstFolders.Items.Remove(folderToRemove);
+        clbExtensions.Items.Clear();
+        lblExtensionInfo.Text = "Select a folder to view file types";
+        ShowStatus($"Folder removed and files decrypted: {folderToRemove}", false);
     }
     
     private void lstFolders_SelectedIndexChanged(object sender, EventArgs e)
@@ -396,12 +618,17 @@ public partial class Form1 : Form
             
             PopulateConfigFromForm();
             await _configManager.SaveConfigAsync(_config);
-            ShowStatus("Configuration saved successfully! The service will pick up changes automatically.", false);
+            
+            // Immediately notify the service of configuration changes
+            var serviceNotified = await ServiceManager.SendConfigReloadCommandAsync();
+            var serviceStatus = ServiceManager.GetServiceStatus();
+            
+            ShowStatus($"Configuration saved successfully! Service notification: {(serviceNotified ? "SUCCESS" : "FAILED")}", false);
 
             MessageBox.Show(
                 "Configuration saved successfully!\n\n" +
-                "The GameLocker service will automatically pick up the new settings.\n" +
-                "Make sure the GameLocker Service is running.\n\n" +
+                $"Service Status: {serviceStatus?.ToString() ?? "Not Found"}\n" +
+                $"Service Notified: {(serviceNotified ? "Yes" : "No")}\n" +
                 $"Folders configured: {lstFolders.Items.Count}\n" +
                 $"Total extension settings: {_folderSettings.Count}",
                 "Configuration Saved",
@@ -527,6 +754,64 @@ public partial class Form1 : Form
             _folderSettings.Clear();
             PopulateFormFromConfig();
             ShowStatus("Configuration cleared.", false);
+        }
+    }
+
+    private async Task TriggerImmediateFolderProcessingAsync(string action, string folderPath)
+    {
+        try
+        {
+            // Check service status
+            var serviceStatus = ServiceManager.GetServiceStatus();
+            
+            if (serviceStatus == null)
+            {
+                ShowStatus("GameLocker Service not found. Please ensure the service is installed.", true);
+                return;
+            }
+            
+            if (serviceStatus != ServiceControllerStatus.Running)
+            {
+                ShowStatus($"GameLocker Service is {serviceStatus}. Attempting to start...", false);
+                
+                var started = await ServiceManager.StartServiceAsync();
+                if (!started)
+                {
+                    ShowStatus("Failed to start GameLocker Service. Please start it manually.", true);
+                    return;
+                }
+                
+                ShowStatus("GameLocker Service started successfully.", false);
+            }
+            
+            // Send immediate command to the service
+            string command = action switch
+            {
+                "add" => "lock", // When adding a folder, we want to lock it if we're outside gaming hours
+                "remove" => "unlock", // When removing a folder, we always want to unlock it
+                _ => action
+            };
+            
+            var commandSent = await ServiceManager.SendImmediateActionCommandAsync(command, folderPath);
+            
+            if (commandSent)
+            {
+                ShowStatus($"Command sent to service: {command} folder '{folderPath}'", false);
+                
+                // For remove operations, give a bit more time for processing
+                if (action == "remove")
+                {
+                    await Task.Delay(2000); // Wait 2 seconds for the service to process
+                }
+            }
+            else
+            {
+                ShowStatus("Failed to send command to service.", true);
+            }
+        }
+        catch (Exception ex)
+        {
+            ShowStatus($"Error communicating with service: {ex.Message}", true);
         }
     }
 }

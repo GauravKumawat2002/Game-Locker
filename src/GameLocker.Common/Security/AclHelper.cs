@@ -109,11 +109,29 @@ public static class AclHelper
         if (userSid == null)
             throw new InvalidOperationException("Could not get current user SID.");
 
-        // Get various user groups to restore access
+        // Get various user groups
+        var systemSid = new SecurityIdentifier(WellKnownSidType.LocalSystemSid, null);
+        var adminsSid = new SecurityIdentifier(WellKnownSidType.BuiltinAdministratorsSid, null);
         var usersGroup = new SecurityIdentifier(WellKnownSidType.BuiltinUsersSid, null);
         var authenticatedUsers = new SecurityIdentifier(WellKnownSidType.AuthenticatedUserSid, null);
 
-        // Remove all deny rules we added
+        // First, get all existing rules and remove ALL deny rules
+        var existingRules = security.GetAccessRules(true, false, typeof(SecurityIdentifier));
+        foreach (FileSystemAccessRule rule in existingRules)
+        {
+            if (rule.AccessControlType == AccessControlType.Deny)
+            {
+                // Remove the deny rule - use PurgeAccessRules approach for reliability
+                security.RemoveAccessRuleAll(new FileSystemAccessRule(
+                    rule.IdentityReference,
+                    rule.FileSystemRights,
+                    rule.InheritanceFlags,
+                    rule.PropagationFlags,
+                    AccessControlType.Deny));
+            }
+        }
+
+        // Also try to remove specific deny rules we typically add
         var denyRulesToRemove = new[]
         {
             new FileSystemAccessRule(
@@ -133,23 +151,41 @@ public static class AclHelper
                 FileSystemRights.FullControl,
                 InheritanceFlags.ContainerInherit | InheritanceFlags.ObjectInherit,
                 PropagationFlags.None,
+                AccessControlType.Deny),
+            new FileSystemAccessRule(
+                systemSid,
+                FileSystemRights.FullControl,
+                InheritanceFlags.ContainerInherit | InheritanceFlags.ObjectInherit,
+                PropagationFlags.None,
                 AccessControlType.Deny)
         };
 
         foreach (var rule in denyRulesToRemove)
         {
-            security.RemoveAccessRule(rule);
+            try
+            {
+                security.RemoveAccessRuleAll(rule);
+            }
+            catch { /* Ignore if rule doesn't exist */ }
         }
 
-        // Restore default permissions for Users group
-        var allowRule = new FileSystemAccessRule(
+        // Restore default full control permissions for Users group
+        var allowRuleUsers = new FileSystemAccessRule(
             usersGroup,
-            FileSystemRights.ReadAndExecute,
+            FileSystemRights.FullControl,
             InheritanceFlags.ContainerInherit | InheritanceFlags.ObjectInherit,
             PropagationFlags.None,
             AccessControlType.Allow);
+        security.SetAccessRule(allowRuleUsers);
 
-        security.SetAccessRule(allowRule);
+        // Ensure Authenticated Users also have access
+        var allowRuleAuth = new FileSystemAccessRule(
+            authenticatedUsers,
+            FileSystemRights.FullControl,
+            InheritanceFlags.ContainerInherit | InheritanceFlags.ObjectInherit,
+            PropagationFlags.None,
+            AccessControlType.Allow);
+        security.SetAccessRule(allowRuleAuth);
 
         // Apply the modified security settings
         directoryInfo.SetAccessControl(security);

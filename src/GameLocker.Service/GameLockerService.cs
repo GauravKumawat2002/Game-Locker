@@ -60,16 +60,30 @@ public sealed class GameLockerService : BackgroundService
             {
                 try
                 {
+                    // Check for immediate commands first
+                    await ProcessImmediateCommandsAsync();
+                    
+                    // Check for reload signals
+                    await ProcessReloadSignalAsync();
+                    
+                    // Process regular schedule
                     await ProcessScheduleAsync();
                 }
                 catch (Exception ex)
                 {
-                    _logger.LogError(ex, "Error during schedule processing: {Message}", ex.Message);
+                    _logger.LogError(ex, "Error during service processing: {Message}", ex.Message);
                 }
 
-                // Wait for the polling interval
-                var intervalMinutes = _config?.PollingIntervalMinutes ?? 1;
-                await Task.Delay(TimeSpan.FromMinutes(intervalMinutes), stoppingToken);
+                // Wait for a short interval then check for immediate commands again
+                // Use 5 second polling for responsive command handling
+                for (int i = 0; i < 12; i++) // 12 x 5 seconds = 1 minute
+                {
+                    await Task.Delay(TimeSpan.FromSeconds(5), stoppingToken);
+                    
+                    // Check for immediate commands frequently
+                    await ProcessImmediateCommandsAsync();
+                    await ProcessReloadSignalAsync();
+                }
 
                 // Reload configuration periodically (in case it changed)
                 await LoadConfigurationAsync();
@@ -250,5 +264,157 @@ public sealed class GameLockerService : BackgroundService
         }
 
         return Task.CompletedTask;
+    }
+
+    private async Task ProcessReloadSignalAsync()
+    {
+        try
+        {
+            var configDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "GameLocker");
+            var signalFile = Path.Combine(configDir, "reload_signal");
+
+            if (File.Exists(signalFile))
+            {
+                _logger.LogInformation("Reload signal received. Reloading configuration...");
+                
+                // Delete signal file
+                File.Delete(signalFile);
+                
+                // Force reload configuration
+                await LoadConfigurationAsync();
+                
+                // Apply current state based on new config
+                if (_config != null)
+                {
+                    var now = DateTime.Now;
+                    var isWithinAllowedTime = _config.IsWithinAllowedTime(now);
+                    
+                    if (isWithinAllowedTime)
+                    {
+                        await UnlockAllFoldersAsync();
+                    }
+                    else
+                    {
+                        await LockAllFoldersAsync();
+                    }
+                    
+                    _wasWithinAllowedTime = isWithinAllowedTime;
+                    _logger.LogInformation("Configuration reloaded and applied immediately.");
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error processing reload signal: {Message}", ex.Message);
+        }
+    }
+
+    private async Task ProcessImmediateCommandsAsync()
+    {
+        try
+        {
+            var configDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "GameLocker");
+            var commandFile = Path.Combine(configDir, "immediate_action");
+
+            if (File.Exists(commandFile))
+            {
+                var commandText = await File.ReadAllTextAsync(commandFile);
+                File.Delete(commandFile);
+
+                var parts = commandText.Split('|');
+                if (parts.Length >= 3)
+                {
+                    var action = parts[0];
+                    var folderPath = parts[1];
+                    var timestamp = parts[2];
+
+                    _logger.LogInformation("Immediate command received: {Action} for {Folder}", action, folderPath);
+
+                    switch (action.ToLower())
+                    {
+                        case "lock":
+                            await LockSingleFolderAsync(folderPath);
+                            break;
+                        case "unlock":
+                            await UnlockSingleFolderAsync(folderPath);
+                            break;
+                        case "remove":
+                            await RemoveFolderAsync(folderPath);
+                            break;
+                        default:
+                            _logger.LogWarning("Unknown immediate action: {Action}", action);
+                            break;
+                    }
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error processing immediate commands: {Message}", ex.Message);
+        }
+    }
+
+    private async Task LockSingleFolderAsync(string folderPath)
+    {
+        try
+        {
+            var result = await _folderLocker.LockFolderAsync(folderPath);
+            
+            if (result.State == FolderState.Locked)
+            {
+                _logger.LogInformation("Successfully locked folder: {Path}", folderPath);
+            }
+            else
+            {
+                _logger.LogWarning("Failed to lock folder: {Path} - {Error}", folderPath, result.LastError);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error locking single folder: {Path}", folderPath);
+        }
+    }
+
+    private async Task UnlockSingleFolderAsync(string folderPath)
+    {
+        try
+        {
+            var result = await _folderLocker.UnlockFolderAsync(folderPath);
+            
+            if (result.State == FolderState.Unlocked)
+            {
+                _logger.LogInformation("Successfully unlocked folder: {Path}", folderPath);
+            }
+            else
+            {
+                _logger.LogWarning("Failed to unlock folder: {Path} - {Error}", folderPath, result.LastError);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error unlocking single folder: {Path}", folderPath);
+        }
+    }
+
+    private async Task RemoveFolderAsync(string folderPath)
+    {
+        try
+        {
+            // Always attempt to unlock the folder when removing
+            var result = await _folderLocker.UnlockFolderAsync(folderPath);
+            
+            if (result.State == FolderState.Unlocked)
+            {
+                _logger.LogInformation("Successfully removed and unlocked folder: {Path}", folderPath);
+            }
+            else
+            {
+                _logger.LogWarning("Failed to fully unlock removed folder: {Path} - {Error}", folderPath, result.LastError);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error removing folder: {Path}", folderPath);
+        }
     }
 }
