@@ -318,15 +318,25 @@ if (Test-Path $gameLockFolder) {
     Remove-Item -Path $gameLockFolder -Recurse -Force -ErrorAction SilentlyContinue
 }
 
-# Ask about data directory
-$keepData = Read-Host "Keep configuration and data files? (Y/n)"
-if ($keepData -notmatch '^[Yy]?$') {
-    if (Test-Path $DataPath) {
-        Write-Host "Removing data directory..." -ForegroundColor Yellow
-        Remove-Item -Path $DataPath -Recurse -Force -ErrorAction SilentlyContinue
-    }
+# The data directory is NEVER deleted here.
+#
+# It contains folder_key.dat, the only copy of the key that can decrypt game files. This script
+# used to offer to delete it behind a prompt phrased as being about "configuration files", so
+# answering "n" permanently destroyed every encrypted game on the machine with no warning and no
+# key export. See ARCHITECTURE-REVIEW.md finding [H-2].
+#
+# Deleting it is only safe once every managed folder has been verified unlocked and decrypted.
+# That check is implemented in Phase 6 of REMEDIATION-PLAN.md.
+if (Test-Path $DataPath) {
+    Write-Host ""
+    Write-Host "Configuration and encryption keys have been LEFT IN PLACE at:" -ForegroundColor Yellow
+    Write-Host "  $DataPath" -ForegroundColor Yellow
+    Write-Host ""
+    Write-Host "Do not delete this folder while any game folder is still encrypted -" -ForegroundColor Yellow
+    Write-Host "folder_key.dat is the only key that can decrypt those files." -ForegroundColor Yellow
 }
 
+Write-Host ""
 Write-Host "GameLocker has been uninstalled." -ForegroundColor Green
 Write-Host "Press any key to exit..."
 $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")

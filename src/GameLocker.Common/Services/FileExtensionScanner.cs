@@ -12,6 +12,47 @@ namespace GameLocker.Common.Services;
 public class FileExtensionScanner
 {
     /// <summary>
+    /// Extensions that must never be encrypted, whatever the user selects.
+    /// </summary>
+    /// <remarks>
+    /// Encrypting any of these corrupts a game install. This is enforced in
+    /// <c>FolderEncryptionSettings.ShouldEncryptFile</c> and
+    /// <c>SelectiveEncryptionSettings.ShouldEncryptFile</c>, so no UI action, saved configuration,
+    /// or custom-extension string can override it.
+    /// <para>
+    /// <c>.dat</c> is on this list. It was previously classified as a "Safe" save-file extension and
+    /// auto-selected by default, but <c>.dat</c> is one of the most common primary asset-archive
+    /// extensions in commercial games - Insomniac's engine ships Spider-Man's asset data as
+    /// <c>.toc</c> + <c>.dat</c> pairs. See ARCHITECTURE-REVIEW.md finding [G-7].
+    /// </para>
+    /// </remarks>
+    public static readonly IReadOnlySet<string> NeverEncryptExtensions = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+    {
+        // Executables and libraries
+        ".exe", ".dll", ".so", ".dylib", ".com", ".sys", ".drv", ".ocx", ".msi", ".bat", ".cmd", ".ps1",
+        // Asset archives and engine containers
+        ".dat", ".bin", ".pak", ".toc", ".arc", ".cpk", ".forge", ".rpf", ".bank", ".sarc",
+        ".assets", ".bundle", ".resource", ".res", ".big", ".wad", ".vpk", ".bsa", ".ba2",
+        ".uasset", ".umap", ".upk", ".pck", ".rvdata", ".vfs", ".psarc", ".xnb",
+        // Disk and package images
+        ".iso", ".img", ".cab", ".msix", ".appx",
+    };
+
+    /// <summary>
+    /// Determines whether a file may never be encrypted, based on its extension.
+    /// </summary>
+    /// <param name="fileName">A file name or path.</param>
+    /// <returns><c>true</c> when the file must be left untouched.</returns>
+    public static bool IsNeverEncryptable(string fileName)
+    {
+        if (string.IsNullOrWhiteSpace(fileName))
+            return true;
+
+        var extension = Path.GetExtension(fileName);
+        return string.IsNullOrEmpty(extension) || NeverEncryptExtensions.Contains(extension);
+    }
+
+    /// <summary>
     /// Scans a folder and returns all unique file extensions with file counts.
     /// </summary>
     /// <param name="folderPath">Path to scan</param>
@@ -100,7 +141,9 @@ public class FileExtensionScanner
     {
         return extension.ToLowerInvariant() switch
         {
-            ".sav" or ".save" or ".savegame" or ".dat" or ".progress" or ".slot" or ".checkpoint" => "Save Files",
+            ".sav" or ".save" or ".savegame" or ".gamesave" or ".autosave"
+                or ".progress" or ".slot" or ".checkpoint" => "Save Files",
+            ".dat" or ".toc" or ".arc" or ".cpk" or ".forge" or ".rpf" or ".bank" or ".sarc" => "Game Data",
             ".cfg" or ".ini" or ".conf" or ".config" or ".settings" or ".pref" or ".json" or ".xml" => "Configuration",
             ".profile" or ".user" or ".player" or ".account" or ".character" => "User Data",
             ".exe" or ".dll" or ".so" or ".dylib" or ".bin" => "Executables",
@@ -120,28 +163,34 @@ public class FileExtensionScanner
     /// </summary>
     private RiskLevel AssessRiskLevel(string extension)
     {
+        // Anything on the hard denylist is Dangerous regardless of what the table below says.
+        if (NeverEncryptExtensions.Contains(extension))
+            return RiskLevel.Dangerous;
+
         return extension.ToLowerInvariant() switch
         {
-            // SAFE: User data that can be encrypted without issues
-            ".sav" or ".save" or ".savegame" or ".dat" or ".progress" or ".slot" or ".checkpoint" => RiskLevel.Safe,
-            ".cfg" or ".ini" or ".conf" or ".config" or ".settings" or ".pref" or ".json" or ".xml" => RiskLevel.Safe,
-            ".profile" or ".user" or ".player" or ".account" or ".character" => RiskLevel.Safe,
-            ".txt" or ".log" or ".md" or ".readme" => RiskLevel.Safe,
-            
-            // MODERATE: Usually safe but may affect performance  
+            // SAFE: unambiguous player-save data only.
+            //
+            // RiskLevel.Safe drives the "tick this by default" behaviour in the ConfigUI, so this
+            // set is deliberately small. Configuration formats (.ini, .cfg, .xml, .json) were moved
+            // out of it: they are load-bearing engine configuration in most titles and are read at
+            // startup, so encrypting them prevents the game from launching.
+            // See ARCHITECTURE-REVIEW.md finding [G-7].
+            ".sav" or ".save" or ".savegame" or ".gamesave" or ".autosave"
+                or ".progress" or ".slot" or ".checkpoint" => RiskLevel.Safe,
+
+            // MODERATE: usually recoverable or regenerated, but can affect a running game.
+            ".cfg" or ".ini" or ".conf" or ".config" or ".settings" or ".pref" or ".json" or ".xml" => RiskLevel.Moderate,
+            ".profile" or ".user" or ".player" or ".account" or ".character" => RiskLevel.Moderate,
+            ".txt" or ".log" or ".md" or ".readme" => RiskLevel.Moderate,
             ".tmp" or ".temp" or ".cache" or ".bak" => RiskLevel.Moderate,
-            ".jpg" or ".png" or ".bmp" or ".tga" or ".dds" => RiskLevel.Moderate,
-            ".wav" or ".mp3" or ".ogg" or ".m4a" => RiskLevel.Moderate,
-            
-            // HIGH: Can cause mod conflicts or performance issues
-            ".mod" or ".plugin" or ".addon" => RiskLevel.High,
-            ".pak" or ".wad" or ".vpk" or ".bsa" or ".ba2" => RiskLevel.High,
+
+            // HIGH: large, or loaded directly by the engine.
+            ".jpg" or ".png" or ".bmp" or ".tga" or ".dds" => RiskLevel.High,
+            ".wav" or ".mp3" or ".ogg" or ".m4a" => RiskLevel.High,
             ".mp4" or ".avi" or ".mkv" or ".mov" => RiskLevel.High,
-            
-            // DANGEROUS: Will likely cause game crashes or corruption
-            ".exe" or ".dll" or ".so" or ".dylib" or ".bin" => RiskLevel.Dangerous,
-            ".big" or ".assets" or ".bundle" or ".resource" => RiskLevel.Dangerous,
-            
+            ".mod" or ".plugin" or ".addon" => RiskLevel.High,
+
             _ => RiskLevel.Unknown
         };
     }

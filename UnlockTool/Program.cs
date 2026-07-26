@@ -13,9 +13,26 @@ namespace GameLocker.UnlockTool
         {
             Console.WriteLine("GameLocker Decrypt Tool");
             Console.WriteLine("======================");
-            
-            string folderPath = args.Length > 0 ? args[0] : @"G:\Hogwarts Legacy";
-            
+
+            // No default target. This previously defaulted to a hardcoded personal game folder.
+            // See ARCHITECTURE-REVIEW.md finding [T-7].
+            if (args.Length == 0)
+            {
+                Console.Error.WriteLine("Usage: UnlockTool <folder-path>");
+                Console.Error.WriteLine("       The folder path is required and is never inferred.");
+                Environment.ExitCode = 2;
+                return;
+            }
+
+            string folderPath = args[0];
+
+            if (!Directory.Exists(folderPath))
+            {
+                Console.Error.WriteLine($"Folder does not exist: {folderPath}");
+                Environment.ExitCode = 2;
+                return;
+            }
+
             Console.WriteLine($"Decrypting folder: {folderPath}");
             
             try
@@ -82,37 +99,48 @@ namespace GameLocker.UnlockTool
                 Console.WriteLine($"  - Encrypted files remaining: {remainingEncFiles.Length}");
                 Console.WriteLine($"  - Normal files: {normalFiles.Length}");
                 
-                if (remainingEncFiles.Length == 0)
+                if (remainingEncFiles.Length > 0)
                 {
-                    Console.WriteLine("🎉 All files successfully decrypted!");
-                }
-                else
-                {
-                    Console.WriteLine("⚠️ Some files remain encrypted:");
-                    foreach (var file in remainingEncFiles.Take(5))
+                    // The lock marker is deliberately left in place: it is the only remaining record
+                    // that this folder is under GameLocker management, and removing it while files
+                    // are still encrypted makes the folder report itself as Unlocked.
+                    // See ARCHITECTURE-REVIEW.md finding [F-1].
+                    Console.Error.WriteLine($"{remainingEncFiles.Length} file(s) remain encrypted:");
+                    foreach (var file in remainingEncFiles.Take(10))
                     {
-                        Console.WriteLine($"    - {file.Name}");
+                        Console.Error.WriteLine($"    - {file.FullName}");
                     }
+                    if (remainingEncFiles.Length > 10)
+                        Console.Error.WriteLine($"    ... and {remainingEncFiles.Length - 10} more");
+
+                    Console.Error.WriteLine("");
+                    Console.Error.WriteLine("The folder is NOT fully restored and the lock marker has been kept.");
+                    Console.Error.WriteLine("Resolve the cause and run again before using the folder.");
+                    Environment.ExitCode = 1;
+                    return;
                 }
-                
-                // Check for .gamelocker marker
+
+                Console.WriteLine("All files decrypted.");
+
+                // Only now is it safe to clear the marker.
                 string markerPath = Path.Combine(folderPath, ".gamelocker");
                 if (File.Exists(markerPath))
                 {
-                    Console.WriteLine("🗑️ Removing GameLocker marker file...");
+                    var markerInfo = new FileInfo(markerPath);
+                    markerInfo.Attributes &= ~FileAttributes.Hidden;
                     File.Delete(markerPath);
-                    Console.WriteLine("✅ Marker file removed!");
+                    Console.WriteLine("Lock marker removed.");
                 }
-                
+
+                Console.WriteLine($"\n'{folderPath}' is fully restored.");
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"❌ Error: {ex.Message}");
-                Console.WriteLine($"Stack trace: {ex.StackTrace}");
+                Console.Error.WriteLine($"Error: {ex.Message}");
+                Console.Error.WriteLine(ex.StackTrace);
+                Environment.ExitCode = 4;
                 return;
             }
-            
-            Console.WriteLine("\n🎉 Hogwarts Legacy folder is now fully restored to original state!");
         }
     }
 }

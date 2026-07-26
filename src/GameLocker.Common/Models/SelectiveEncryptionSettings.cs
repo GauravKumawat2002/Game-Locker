@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text.Json.Serialization;
+using GameLocker.Common.Services;
 
 namespace GameLocker.Common.Models;
 
@@ -162,12 +163,17 @@ public class SelectiveEncryptionSettings
     /// <returns>True if the file should be encrypted</returns>
     public bool ShouldEncryptFile(string fileName)
     {
-        if (!UseSelectiveEncryption)
-            return true; // Encrypt everything if selective mode is disabled
-            
         if (string.IsNullOrWhiteSpace(fileName))
             return false;
-        
+
+        // The hard denylist wins over every setting, including UseSelectiveEncryption = false and
+        // EncryptExecutables / EncryptAssets = true. See ARCHITECTURE-REVIEW.md finding [G-7].
+        if (FileExtensionScanner.IsNeverEncryptable(fileName))
+            return false;
+
+        if (!UseSelectiveEncryption)
+            return true; // Encrypt everything else if selective mode is disabled
+
         var extension = Path.GetExtension(fileName).ToLowerInvariant();
         return GetExtensionsToEncrypt().Contains(extension);
     }

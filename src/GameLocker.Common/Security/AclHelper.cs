@@ -8,9 +8,40 @@ namespace GameLocker.Common.Security;
 /// </summary>
 public static class AclHelper
 {
+    private const InheritanceFlags LockInheritanceFlags =
+        InheritanceFlags.ContainerInherit | InheritanceFlags.ObjectInherit;
+
     /// <summary>
-    /// Denies access to a folder for all non-admin users while preserving SYSTEM access.
-    /// IMPORTANT: SYSTEM must retain access so the service can manage locked folders.
+    /// The rights denied to standard users while a folder is locked.
+    /// </summary>
+    /// <remarks>
+    /// This mask deliberately EXCLUDES <see cref="FileSystemRights.ChangePermissions"/> (WRITE_DAC),
+    /// <see cref="FileSystemRights.TakeOwnership"/> (WRITE_OWNER) and
+    /// <see cref="FileSystemRights.ReadPermissions"/> (READ_CONTROL).
+    /// <para>
+    /// Denying <see cref="FileSystemRights.FullControl"/> also denies those three rights - which are
+    /// precisely the rights required to remove the deny rule again. The result was a folder that
+    /// neither the service nor an Administrator could recover without taking ownership first.
+    /// Because a LocalSystem token is itself a member of BUILTIN\Users, denying FullControl to that
+    /// group locked the service out of the folders it is responsible for unlocking.
+    /// See ARCHITECTURE-REVIEW.md findings [P-1] and [P-2].
+    /// </para>
+    /// Content is unreadable and unexecutable while locked, so a game cannot launch, but the ACL
+    /// can always be repaired.
+    /// </remarks>
+    private const FileSystemRights LockedDenyRights =
+        FileSystemRights.ReadData |                  // == ListDirectory
+        FileSystemRights.WriteData |                 // == CreateFiles
+        FileSystemRights.AppendData |                // == CreateDirectories
+        FileSystemRights.ReadExtendedAttributes |
+        FileSystemRights.WriteExtendedAttributes |
+        FileSystemRights.ExecuteFile |               // == Traverse
+        FileSystemRights.DeleteSubdirectoriesAndFiles |
+        FileSystemRights.Delete;
+
+    /// <summary>
+    /// Denies content access to a folder for all interactive users, while leaving the ability to
+    /// repair the ACL intact for both SYSTEM and Administrators.
     /// </summary>
     /// <param name="folderPath">The path to the folder.</param>
     public static void DenyAccess(string folderPath)
@@ -21,78 +52,57 @@ public static class AclHelper
         var directoryInfo = new DirectoryInfo(folderPath);
         var security = directoryInfo.GetAccessControl();
 
-        // Get the current user's identity
-        var currentUser = WindowsIdentity.GetCurrent();
-        var userSid = currentUser.User;
-
-        if (userSid == null)
-            throw new InvalidOperationException("Could not get current user SID.");
-
-        // CRITICAL: Get SYSTEM account SID - the service runs as SYSTEM and must retain access
         var systemSid = new SecurityIdentifier(WellKnownSidType.LocalSystemSid, null);
         var adminsSid = new SecurityIdentifier(WellKnownSidType.BuiltinAdministratorsSid, null);
-
-        // Get various user groups to deny
         var usersGroup = new SecurityIdentifier(WellKnownSidType.BuiltinUsersSid, null);
-        var authenticatedUsers = new SecurityIdentifier(WellKnownSidType.AuthenticatedUserSid, null);
 
-        // FIRST: Add explicit ALLOW rule for SYSTEM so it can still manage the folder
-        // This MUST be added BEFORE deny rules because deny rules take precedence by default
-        var systemAllowRule = new FileSystemAccessRule(
+        // Ensure SYSTEM and Administrators always hold an explicit Allow entry. A Deny still wins
+        // over these for the rights it covers; these exist so the DACL is never left with no Allow
+        // entry at all, and so ownership/permission repair is always attributable.
+        security.SetAccessRule(new FileSystemAccessRule(
             systemSid,
             FileSystemRights.FullControl,
-            InheritanceFlags.ContainerInherit | InheritanceFlags.ObjectInherit,
+            LockInheritanceFlags,
             PropagationFlags.None,
-            AccessControlType.Allow);
-        security.SetAccessRule(systemAllowRule);
+            AccessControlType.Allow));
 
-        // Also ensure Administrators can access
-        var adminsAllowRule = new FileSystemAccessRule(
+        security.SetAccessRule(new FileSystemAccessRule(
             adminsSid,
             FileSystemRights.FullControl,
-            InheritanceFlags.ContainerInherit | InheritanceFlags.ObjectInherit,
+            LockInheritanceFlags,
             PropagationFlags.None,
-            AccessControlType.Allow);
-        security.SetAccessRule(adminsAllowRule);
+            AccessControlType.Allow));
 
-        // Add deny rules for regular users - but NOT Everyone (which includes SYSTEM)
-        var denyRules = new[]
-        {
-            // Deny all access to Users group
-            new FileSystemAccessRule(
-                usersGroup,
-                FileSystemRights.FullControl,
-                InheritanceFlags.ContainerInherit | InheritanceFlags.ObjectInherit,
-                PropagationFlags.None,
-                AccessControlType.Deny),
-            // Deny all access to Authenticated Users
-            new FileSystemAccessRule(
-                authenticatedUsers,
-                FileSystemRights.FullControl,
-                InheritanceFlags.ContainerInherit | InheritanceFlags.ObjectInherit,
-                PropagationFlags.None,
-                AccessControlType.Deny),
-            // Deny access to current user specifically
-            new FileSystemAccessRule(
-                userSid,
-                FileSystemRights.FullControl,
-                InheritanceFlags.ContainerInherit | InheritanceFlags.ObjectInherit,
-                PropagationFlags.None,
-                AccessControlType.Deny)
-        };
+        // A single deny against BUILTIN\Users covers every interactive account, administrators
+        // included. Deny rules for AuthenticatedUsers and for the calling process's own SID were
+        // removed: the latter resolved to S-1-5-18 when called from the service, so the service
+        // denied itself. See LockedDenyRights.
+        security.SetAccessRule(new FileSystemAccessRule(
+            usersGroup,
+            LockedDenyRights,
+            LockInheritanceFlags,
+            PropagationFlags.None,
+            AccessControlType.Deny));
 
-        foreach (var rule in denyRules)
-        {
-            security.SetAccessRule(rule); // Use SetAccessRule instead of AddAccessRule to ensure it takes precedence
-        }
-
-        // Apply the modified security settings
         directoryInfo.SetAccessControl(security);
     }
 
     /// <summary>
-    /// Removes the deny access rule from a folder, restoring normal access.
+    /// Removes every explicit deny rule from a folder, restoring the access it had before it was
+    /// locked.
     /// </summary>
+    /// <remarks>
+    /// This method no longer grants FullControl to Users and Authenticated Users. Doing so did not
+    /// restore the folder's original permissions - it replaced them with a permanently more
+    /// permissive set, so a single lock/unlock cycle on a folder under Program Files left it
+    /// writable by every account on the machine. See ARCHITECTURE-REVIEW.md finding [P-3].
+    /// <para>
+    /// Because <see cref="DenyAccess"/> only ever adds deny entries, removing them restores the
+    /// prior state. Explicit deny entries added by anything other than GameLocker are also removed,
+    /// which is deliberate: it lets this method recover folders left inaccessible by earlier
+    /// versions.
+    /// </para>
+    /// </remarks>
     /// <param name="folderPath">The path to the folder.</param>
     public static void AllowAccess(string folderPath)
     {
@@ -102,92 +112,33 @@ public static class AclHelper
         var directoryInfo = new DirectoryInfo(folderPath);
         var security = directoryInfo.GetAccessControl();
 
-        // Get the current user's identity
-        var currentUser = WindowsIdentity.GetCurrent();
-        var userSid = currentUser.User;
+        // GetAccessRules returns a snapshot, so mutating `security` while iterating it is safe.
+        // includeInherited is false: an inherited deny belongs to a parent folder and cannot be
+        // removed here.
+        var existingRules = security.GetAccessRules(
+            includeExplicit: true,
+            includeInherited: false,
+            targetType: typeof(SecurityIdentifier));
 
-        if (userSid == null)
-            throw new InvalidOperationException("Could not get current user SID.");
-
-        // Get various user groups
-        var systemSid = new SecurityIdentifier(WellKnownSidType.LocalSystemSid, null);
-        var adminsSid = new SecurityIdentifier(WellKnownSidType.BuiltinAdministratorsSid, null);
-        var usersGroup = new SecurityIdentifier(WellKnownSidType.BuiltinUsersSid, null);
-        var authenticatedUsers = new SecurityIdentifier(WellKnownSidType.AuthenticatedUserSid, null);
-
-        // First, get all existing rules and remove ALL deny rules
-        var existingRules = security.GetAccessRules(true, false, typeof(SecurityIdentifier));
+        var removed = 0;
         foreach (FileSystemAccessRule rule in existingRules)
         {
-            if (rule.AccessControlType == AccessControlType.Deny)
-            {
-                // Remove the deny rule - use PurgeAccessRules approach for reliability
-                security.RemoveAccessRuleAll(new FileSystemAccessRule(
-                    rule.IdentityReference,
-                    rule.FileSystemRights,
-                    rule.InheritanceFlags,
-                    rule.PropagationFlags,
-                    AccessControlType.Deny));
-            }
+            if (rule.AccessControlType != AccessControlType.Deny)
+                continue;
+
+            security.RemoveAccessRuleAll(new FileSystemAccessRule(
+                rule.IdentityReference,
+                rule.FileSystemRights,
+                rule.InheritanceFlags,
+                rule.PropagationFlags,
+                AccessControlType.Deny));
+
+            removed++;
         }
 
-        // Also try to remove specific deny rules we typically add
-        var denyRulesToRemove = new[]
-        {
-            new FileSystemAccessRule(
-                usersGroup,
-                FileSystemRights.FullControl,
-                InheritanceFlags.ContainerInherit | InheritanceFlags.ObjectInherit,
-                PropagationFlags.None,
-                AccessControlType.Deny),
-            new FileSystemAccessRule(
-                authenticatedUsers,
-                FileSystemRights.FullControl,
-                InheritanceFlags.ContainerInherit | InheritanceFlags.ObjectInherit,
-                PropagationFlags.None,
-                AccessControlType.Deny),
-            new FileSystemAccessRule(
-                userSid,
-                FileSystemRights.FullControl,
-                InheritanceFlags.ContainerInherit | InheritanceFlags.ObjectInherit,
-                PropagationFlags.None,
-                AccessControlType.Deny),
-            new FileSystemAccessRule(
-                systemSid,
-                FileSystemRights.FullControl,
-                InheritanceFlags.ContainerInherit | InheritanceFlags.ObjectInherit,
-                PropagationFlags.None,
-                AccessControlType.Deny)
-        };
+        if (removed == 0)
+            return; // Nothing to undo; leave the DACL untouched.
 
-        foreach (var rule in denyRulesToRemove)
-        {
-            try
-            {
-                security.RemoveAccessRuleAll(rule);
-            }
-            catch { /* Ignore if rule doesn't exist */ }
-        }
-
-        // Restore default full control permissions for Users group
-        var allowRuleUsers = new FileSystemAccessRule(
-            usersGroup,
-            FileSystemRights.FullControl,
-            InheritanceFlags.ContainerInherit | InheritanceFlags.ObjectInherit,
-            PropagationFlags.None,
-            AccessControlType.Allow);
-        security.SetAccessRule(allowRuleUsers);
-
-        // Ensure Authenticated Users also have access
-        var allowRuleAuth = new FileSystemAccessRule(
-            authenticatedUsers,
-            FileSystemRights.FullControl,
-            InheritanceFlags.ContainerInherit | InheritanceFlags.ObjectInherit,
-            PropagationFlags.None,
-            AccessControlType.Allow);
-        security.SetAccessRule(allowRuleAuth);
-
-        // Apply the modified security settings
         directoryInfo.SetAccessControl(security);
     }
 
@@ -211,9 +162,12 @@ public static class AclHelper
 
             foreach (FileSystemAccessRule rule in rules)
             {
+                // Match on ReadData rather than FullControl: DenyAccess deliberately denies a
+                // reduced right set so that the ACL stays repairable, so a FullControl test would
+                // never fire. ReadData is present in every lock this code produces.
                 if (rule.IdentityReference.Equals(usersGroup) &&
                     rule.AccessControlType == AccessControlType.Deny &&
-                    rule.FileSystemRights.HasFlag(FileSystemRights.FullControl))
+                    rule.FileSystemRights.HasFlag(FileSystemRights.ReadData))
                 {
                     return true;
                 }

@@ -48,8 +48,17 @@ Source: "..\..\installer-package\publish\configui\*"; DestDir: "{app}\ConfigUI";
 ; NOTE: Don't use "Flags: ignoreversion" on any shared system files
 
 [Dirs]
-Name: "{app}\Logs"; Permissions: users-full
-Name: "{commonappdata}\{#MyAppName}"; Permissions: users-full
+; These deliberately carry NO "Permissions: users-full".
+;
+; That grant made %ProgramData%\GameLocker writable by every account on the machine. The service
+; runs as LocalSystem and polls that directory for a command file, so any unprivileged user could
+; make SYSTEM operate on an arbitrary path - a local privilege escalation - and could delete
+; folder_key.dat, permanently destroying every encrypted folder.
+; See ARCHITECTURE-REVIEW.md findings [V-1], [V-2], [H-3] and [V-5].
+;
+; The explicit DACL is applied by the icacls steps in [Run] below.
+Name: "{app}\Logs"
+Name: "{commonappdata}\{#MyAppName}"
 
 [Icons]
 Name: "{group}\{#MyAppName} Configuration"; Filename: "{app}\ConfigUI\{#MyAppConfigExeName}"
@@ -57,6 +66,12 @@ Name: "{group}\Uninstall {#MyAppName}"; Filename: "{uninstallexe}"
 Name: "{autodesktop}\{#MyAppName} Configuration"; Filename: "{app}\ConfigUI\{#MyAppConfigExeName}"; Tasks: desktopicon
 
 [Run]
+; Lock down the data directory BEFORE the service starts. Well-known SIDs are used so this is
+; independent of the display language: S-1-5-18 = LocalSystem, S-1-5-32-544 = Administrators.
+; /inheritance:r removes the inherited grants that would otherwise let standard users write here.
+Filename: "icacls.exe"; Parameters: """{commonappdata}\{#MyAppName}"" /inheritance:r /grant *S-1-5-18:(OI)(CI)F /grant *S-1-5-32-544:(OI)(CI)F"; Flags: runhidden waituntilterminated
+Filename: "icacls.exe"; Parameters: """{app}\Logs"" /inheritance:r /grant *S-1-5-18:(OI)(CI)F /grant *S-1-5-32-544:(OI)(CI)F"; Flags: runhidden waituntilterminated
+
 ; Install and start the Windows Service
 Filename: "sc.exe"; Parameters: "create GameLockerService binPath= ""{app}\Service\{#MyAppServiceExeName}"" start= auto DisplayName= ""GameLocker Service"""; Flags: runhidden waituntilterminated
 Filename: "sc.exe"; Parameters: "description GameLockerService ""Automatically locks and unlocks game folders based on configured schedules."""; Flags: runhidden waituntilterminated

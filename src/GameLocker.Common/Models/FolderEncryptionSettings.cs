@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text.Json.Serialization;
+using GameLocker.Common.Services;
 
 namespace GameLocker.Common.Models;
 
@@ -64,12 +65,17 @@ public class FolderEncryptionSettings
     /// </summary>
     public bool ShouldEncryptFile(string fileName)
     {
+        // The hard denylist wins over every setting, saved selection and preset.
+        // See ARCHITECTURE-REVIEW.md finding [G-7].
+        if (FileExtensionScanner.IsNeverEncryptable(fileName))
+            return false;
+
         if (!UseCustomSelection || SelectedExtensions.Count == 0)
         {
             // Fall back to preset if no custom selection
             return FallbackPreset?.ShouldEncryptFile(fileName) ?? false;
         }
-        
+
         var extension = Path.GetExtension(fileName).ToLowerInvariant();
         return SelectedExtensions.Contains(extension);
     }

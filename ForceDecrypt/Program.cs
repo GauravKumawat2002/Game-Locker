@@ -12,11 +12,31 @@ namespace GameLocker.ForceDecrypt
     {
         static async Task Main(string[] args)
         {
-            Console.WriteLine("🚨 FORCE DECRYPT TOOL - EMERGENCY FILE RECOVERY");
-            Console.WriteLine("================================================");
-            
-            string folderPath = args.Length > 0 ? args[0] : @"G:\Hogwarts Legacy";
-            
+            Console.WriteLine("FORCE DECRYPT TOOL - file recovery");
+            Console.WriteLine("==================================");
+            Console.WriteLine("This tool never deletes a file it could not decrypt and verify.");
+            Console.WriteLine("");
+
+            // No default target. This previously defaulted to a hardcoded personal game folder,
+            // so running the tool with no arguments pointed its destructive logic at whatever
+            // happened to live there. See ARCHITECTURE-REVIEW.md finding [T-7].
+            if (args.Length == 0)
+            {
+                Console.Error.WriteLine("Usage: ForceDecrypt <folder-path>");
+                Console.Error.WriteLine("       The folder path is required and is never inferred.");
+                Environment.ExitCode = 2;
+                return;
+            }
+
+            string folderPath = args[0];
+
+            if (!Directory.Exists(folderPath))
+            {
+                Console.Error.WriteLine($"Folder does not exist: {folderPath}");
+                Environment.ExitCode = 2;
+                return;
+            }
+
             Console.WriteLine($"Target: {folderPath}");
             Console.WriteLine("");
             
@@ -30,29 +50,22 @@ namespace GameLocker.ForceDecrypt
                 var keyPath = Path.Combine(keyStorePath, "folder_key.dat");
                 var ivPath = Path.Combine(keyStorePath, "folder_iv.dat");
                 
+                // There is deliberately no fallback to keys.dat / iv.dat here. Those protect the
+                // configuration file, not game files; using them guarantees every decryption fails,
+                // which used to drive the whole folder down the destructive "raw recovery" path.
+                // See ARCHITECTURE-REVIEW.md finding [D-5].
                 if (!File.Exists(keyPath) || !File.Exists(ivPath))
                 {
-                    Console.WriteLine("❌ Encryption keys not found. Trying alternative approach...");
-                    
-                    // Try original key files
-                    keyPath = Path.Combine(keyStorePath, "keys.dat");
-                    ivPath = Path.Combine(keyStorePath, "iv.dat");
-                }
-                
-                byte[] masterKey = null;
-                byte[] masterIV = null;
-                
-                if (File.Exists(keyPath) && File.Exists(ivPath))
-                {
-                    masterKey = await DpapiHelper.UnprotectFromFileAsync(keyPath);
-                    masterIV = await DpapiHelper.UnprotectFromFileAsync(ivPath);
-                    Console.WriteLine("✅ Encryption keys loaded successfully!");
-                }
-                else
-                {
-                    Console.WriteLine("❌ No valid encryption keys found!");
+                    Console.Error.WriteLine($"Folder encryption keys not found in {keyStorePath}.");
+                    Console.Error.WriteLine("Expected folder_key.dat and folder_iv.dat.");
+                    Console.Error.WriteLine("Without them these files cannot be decrypted. Nothing has been modified.");
+                    Environment.ExitCode = 3;
                     return;
                 }
+
+                byte[] masterKey = await DpapiHelper.UnprotectFromFileAsync(keyPath);
+                byte[] masterIV = await DpapiHelper.UnprotectFromFileAsync(ivPath);
+                Console.WriteLine("Encryption keys loaded.");
                 
                 // Find all encrypted files
                 var encryptedFiles = Directory.GetFiles(folderPath, "*.enc", SearchOption.AllDirectories);
@@ -75,42 +88,55 @@ namespace GameLocker.ForceDecrypt
                         byte[] encryptedData = await File.ReadAllBytesAsync(encFile);
                         
                         // Try to decrypt
-                        byte[] decryptedData = null;
-                        
-                        try 
+                        byte[] decryptedData;
+
+                        try
                         {
                             decryptedData = AesEncryptionHelper.Decrypt(encryptedData, masterKey, masterIV);
                         }
                         catch (Exception decryptEx)
                         {
-                            Console.WriteLine($"  ❌ Decrypt failed: {decryptEx.Message}");
-                            
-                            // Try alternative method - maybe file was corrupted, just remove .enc extension
-                            Console.WriteLine($"  🔧 Attempting raw file recovery...");
-                            
-                            // If the original file doesn't exist, try to recover what we can
-                            if (!File.Exists(originalFile))
-                            {
-                                // Copy the encrypted file without .enc extension as last resort
-                                File.Copy(encFile, originalFile, true);
-                                Console.WriteLine($"  ⚠️ Raw recovery attempted (file may be corrupted)");
-                            }
-                            
-                            // Delete the .enc file
-                            File.Delete(encFile);
+                            // The previous implementation copied the CIPHERTEXT over the plaintext
+                            // filename and then deleted the .enc - destroying the only recoverable
+                            // copy at exactly the moment the data was still recoverable, while
+                            // reporting it as a successful recovery.
+                            // See ARCHITECTURE-REVIEW.md finding [D-5]. Leave both files alone.
+                            Console.Error.WriteLine($"  FAILED: {decryptEx.Message}");
+                            Console.Error.WriteLine($"          '{Path.GetFileName(encFile)}' left untouched for retry.");
                             failCount++;
                             continue;
                         }
-                        
-                        // Write decrypted content
-                        await File.WriteAllBytesAsync(originalFile, decryptedData);
-                        
-                        // Delete encrypted file
+
+                        if (File.Exists(originalFile))
+                        {
+                            Console.Error.WriteLine($"  SKIPPED: '{Path.GetFileName(originalFile)}' already exists.");
+                            Console.Error.WriteLine( "           Refusing to overwrite it. Resolve manually.");
+                            failCount++;
+                            continue;
+                        }
+
+                        // Write plaintext to a temporary file, verify it round-trips, and only then
+                        // put it in place and remove the ciphertext.
+                        var tempFile = originalFile + ".gltmp";
+                        await File.WriteAllBytesAsync(tempFile, decryptedData);
+
+                        var written = await File.ReadAllBytesAsync(tempFile);
+                        if (written.Length != decryptedData.Length ||
+                            !written.AsSpan().SequenceEqual(decryptedData))
+                        {
+                            File.Delete(tempFile);
+                            Console.Error.WriteLine($"  FAILED: verification mismatch writing '{Path.GetFileName(originalFile)}'.");
+                            Console.Error.WriteLine( "          Ciphertext left untouched for retry.");
+                            failCount++;
+                            continue;
+                        }
+
+                        File.Move(tempFile, originalFile);
                         File.Delete(encFile);
-                        
-                        Console.WriteLine($"  ✅ Successfully decrypted!");
+
+                        Console.WriteLine($"  OK");
                         successCount++;
-                        
+
                     }
                     catch (Exception ex)
                     {
@@ -120,33 +146,38 @@ namespace GameLocker.ForceDecrypt
                 }
                 
                 Console.WriteLine("");
-                Console.WriteLine("🎯 DECRYPTION SUMMARY:");
-                Console.WriteLine($"  ✅ Successfully decrypted: {successCount} files");
-                Console.WriteLine($"  ❌ Failed to decrypt: {failCount} files");
-                
+                Console.WriteLine("SUMMARY");
+                Console.WriteLine($"  Decrypted and verified: {successCount}");
+                Console.WriteLine($"  Failed:                 {failCount}");
+
                 if (failCount == 0)
                 {
                     Console.WriteLine("");
-                    Console.WriteLine("🎉 ALL FILES SUCCESSFULLY DECRYPTED!");
-                    Console.WriteLine("Your Hogwarts Legacy game should now work properly!");
+                    Console.WriteLine("All files decrypted and verified.");
                 }
                 else
                 {
                     Console.WriteLine("");
-                    Console.WriteLine("⚠️ Some files failed to decrypt but have been recovered where possible.");
-                    Console.WriteLine("Try launching the game - it may still work with these files.");
+                    Console.WriteLine($"{failCount} file(s) could not be decrypted. Their .enc files were NOT deleted,");
+                    Console.WriteLine("so they can be retried once the cause is resolved. The folder is incomplete");
+                    Console.WriteLine("and the game will not run correctly until every file is recovered.");
+                    Environment.ExitCode = 1;
                 }
-                
+
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"❌ Critical Error: {ex.Message}");
-                Console.WriteLine($"Stack trace: {ex.StackTrace}");
+                Console.Error.WriteLine($"Critical error: {ex.Message}");
+                Console.Error.WriteLine(ex.StackTrace);
+                Environment.ExitCode = 4;
             }
-            
-            Console.WriteLine("");
-            Console.WriteLine("Press any key to exit...");
-            Console.ReadKey();
+
+            if (!Console.IsInputRedirected)
+            {
+                Console.WriteLine("");
+                Console.WriteLine("Press any key to exit...");
+                Console.ReadKey();
+            }
         }
     }
 }

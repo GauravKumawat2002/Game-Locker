@@ -217,10 +217,28 @@ public class FolderLocker
         if (_masterKey == null || _masterIV == null)
             await InitializeAsync();
 
-        // Get all files recursively, excluding the lock marker
-        var files = Directory.GetFiles(folderPath, "*", SearchOption.AllDirectories)
-            .Where(f => !f.EndsWith(".gamelocker") && !f.EndsWith(".enc"))
+        // Get all files recursively, excluding the lock marker and already-encrypted files.
+        var candidates = Directory.GetFiles(folderPath, "*", SearchOption.AllDirectories)
+            .Where(f => !IsGameLockerArtefact(f))
             .ToArray();
+
+        // The hard denylist applies on this path too.
+        //
+        // This method is what the service actually runs - GameLockerService.LockAllFoldersAsync
+        // calls LockFolderAsync, never LockFolderWithCustomExtensionsAsync, so the per-folder
+        // extension selection made in the UI has never been consulted. Until that wiring is fixed
+        // (Phase 1-4 of REMEDIATION-PLAN.md) this filter is the only thing standing between a
+        // scheduled lock and an encrypted .exe, .dll or asset archive.
+        // See ARCHITECTURE-REVIEW.md findings [D-1] and [G-7].
+        var files = candidates.Where(f => !FileExtensionScanner.IsNeverEncryptable(f)).ToArray();
+        var protectedCount = candidates.Length - files.Length;
+
+        if (protectedCount > 0)
+        {
+            Console.WriteLine(
+                $"Skipping {protectedCount} file(s) whose extension may never be encrypted " +
+                "(executables, libraries and asset archives).");
+        }
 
         foreach (var filePath in files)
         {
@@ -234,6 +252,22 @@ public class FolderLocker
                 Console.WriteLine($"Failed to encrypt {filePath}: {ex.Message}");
             }
         }
+    }
+
+    /// <summary>
+    /// Determines whether a path is a file GameLocker itself created and must not re-process.
+    /// </summary>
+    /// <remarks>
+    /// The previous filter compared the whole path with the culture-sensitive
+    /// <c>string.EndsWith</c> overload, so a file named <c>mysave.gamelocker</c> anywhere in the
+    /// tree was silently exempt. See ARCHITECTURE-REVIEW.md finding [D-14].
+    /// </remarks>
+    private static bool IsGameLockerArtefact(string filePath)
+    {
+        var name = Path.GetFileName(filePath);
+
+        return string.Equals(name, ".gamelocker", StringComparison.OrdinalIgnoreCase)
+            || Path.GetExtension(name).Equals(".enc", StringComparison.OrdinalIgnoreCase);
     }
 
     /// <summary>
@@ -279,16 +313,23 @@ public class FolderLocker
             try
             {
                 // Check if file is already encrypted
-                if (filePath.EndsWith(".enc"))
+                if (filePath.EndsWith(".enc", StringComparison.OrdinalIgnoreCase))
                     return;
 
-                // Check if encrypted version already exists
+                // An existing .enc alongside an existing original means a previous run was
+                // interrupted between writing the ciphertext and deleting the plaintext. The
+                // ciphertext may be truncated, and there is no header or MAC to tell us whether it
+                // is complete, so it cannot be trusted.
+                //
+                // This branch previously deleted the original on the assumption the .enc was valid,
+                // which turned every interrupted lock into permanent, silent data loss on the next
+                // run. See ARCHITECTURE-REVIEW.md finding [D-2]. Refuse and surface it instead.
                 if (File.Exists(encryptedPath))
                 {
-                    // File is already encrypted, just delete original if it exists
-                    if (File.Exists(filePath))
-                        File.Delete(filePath);
-                    return;
+                    throw new InvalidOperationException(
+                        $"Refusing to encrypt '{filePath}': an unverified '{Path.GetFileName(encryptedPath)}' " +
+                        "already exists, which indicates an interrupted previous run. " +
+                        "Resolve this file manually before locking again - the original has NOT been deleted.");
                 }
 
                 // Wait for any file handles to be released
@@ -474,9 +515,10 @@ public class FolderLocker
 
         // Get all files recursively, excluding the lock marker and already encrypted files
         var files = Directory.GetFiles(folderPath, "*", SearchOption.AllDirectories)
-            .Where(f => !f.EndsWith(".gamelocker") && !f.EndsWith(".enc"))
+            .Where(f => !IsGameLockerArtefact(f))
             .ToArray();
 
+        // ShouldEncryptFile already enforces the hard denylist.
         var filesToEncrypt = files.Where(f => folderSettings.ShouldEncryptFile(Path.GetFileName(f))).ToArray();
         var skippedFiles = files.Except(filesToEncrypt).ToArray();
 

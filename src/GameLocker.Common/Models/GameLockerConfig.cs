@@ -64,24 +64,49 @@ public class GameLockerConfig
     /// <returns>True if gaming is currently allowed, false otherwise.</returns>
     public bool IsWithinAllowedTime(DateTime currentTime)
     {
-        // Check if today is an allowed day
-        if (!AllowedDays.Contains(currentTime.DayOfWeek))
+        foreach (var (start, end) in GetWindows(currentTime))
         {
-            return false;
+            if (currentTime >= start && currentTime < end)
+                return true;
         }
 
-        // Calculate the time window
-        var currentTimeOnly = TimeOnly.FromDateTime(currentTime);
-        var endTime = StartTime.AddHours(DurationHours);
+        return false;
+    }
 
-        // Handle case where gaming window crosses midnight
-        if (endTime < StartTime)
+    /// <summary>
+    /// Produces the gaming windows as absolute date-time intervals, from one day before the given
+    /// time to seven days after it.
+    /// </summary>
+    /// <remarks>
+    /// The previous implementation tested <see cref="AllowedDays"/> against the current day before
+    /// looking at the time, so a window configured as "Saturday, 22:00, 4 hours" was reported as
+    /// not allowed the moment the clock passed midnight - the service locked the folder at 00:01
+    /// while the user was two hours into a four-hour session. The dedicated midnight-crossing
+    /// branch could never be reached, because the day check had already returned.
+    /// See ARCHITECTURE-REVIEW.md finding [S-2].
+    /// <para>
+    /// Generating absolute intervals and anchoring each one to the day it <em>starts</em> on makes
+    /// midnight- and multi-day-crossing windows correct by construction. The look-back of one day
+    /// is what allows a window opened yesterday and still running to be found.
+    /// </para>
+    /// </remarks>
+    /// <param name="referenceTime">The time to generate windows around.</param>
+    /// <returns>The windows, ordered by start time.</returns>
+    private IEnumerable<(DateTime Start, DateTime End)> GetWindows(DateTime referenceTime)
+    {
+        if (AllowedDays.Count == 0 || DurationHours <= 0)
+            yield break;
+
+        for (var dayOffset = -1; dayOffset <= 7; dayOffset++)
         {
-            // Gaming window crosses midnight
-            return currentTimeOnly >= StartTime || currentTimeOnly < endTime;
-        }
+            var day = referenceTime.Date.AddDays(dayOffset);
 
-        return currentTimeOnly >= StartTime && currentTimeOnly < endTime;
+            if (!AllowedDays.Contains(day.DayOfWeek))
+                continue;
+
+            var start = day.Add(StartTime.ToTimeSpan());
+            yield return (start, start.AddHours(DurationHours));
+        }
     }
 
     /// <summary>
@@ -91,23 +116,10 @@ public class GameLockerConfig
     /// <returns>The next DateTime when gaming will be unlocked, or null if no schedule.</returns>
     public DateTime? GetNextUnlockTime(DateTime currentTime)
     {
-        if (AllowedDays.Count == 0)
-            return null;
-
-        var currentDate = currentTime.Date;
-        
-        // Check the next 7 days
-        for (int i = 0; i < 7; i++)
+        foreach (var (start, _) in GetWindows(currentTime))
         {
-            var checkDate = currentDate.AddDays(i);
-            if (AllowedDays.Contains(checkDate.DayOfWeek))
-            {
-                var unlockDateTime = checkDate.Add(StartTime.ToTimeSpan());
-                if (unlockDateTime > currentTime)
-                {
-                    return unlockDateTime;
-                }
-            }
+            if (start > currentTime)
+                return start;
         }
 
         return null;
@@ -120,19 +132,15 @@ public class GameLockerConfig
     /// <returns>The next DateTime when gaming will be locked, or null if no schedule.</returns>
     public DateTime? GetNextLockTime(DateTime currentTime)
     {
-        if (!IsWithinAllowedTime(currentTime))
-            return null;
-
-        var endTime = StartTime.AddHours(DurationHours);
-        var lockDateTime = currentTime.Date.Add(endTime.ToTimeSpan());
-        
-        // If end time is before start time, it means we're crossing midnight
-        if (endTime < StartTime)
+        // The end of the window currently in progress. Returns null when no window is open, which
+        // callers treat as "already locked".
+        foreach (var (start, end) in GetWindows(currentTime))
         {
-            lockDateTime = lockDateTime.AddDays(1);
+            if (currentTime >= start && currentTime < end)
+                return end;
         }
 
-        return lockDateTime;
+        return null;
     }
 
     /// <summary>

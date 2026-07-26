@@ -142,19 +142,29 @@ public sealed class GameLockerService : BackgroundService
         // Check if state changed or if this is the first run
         if (_isFirstRun || isWithinAllowedTime != _wasWithinAllowedTime)
         {
-            if (isWithinAllowedTime)
+            var total = _config.GameFolderPaths.Count;
+
+            var succeeded = isWithinAllowedTime
+                ? await UnlockAllFoldersAsync()
+                : await LockAllFoldersAsync();
+
+            // Only record the transition once every folder actually reached the required state.
+            // This was previously assigned unconditionally, so a single transient failure at the
+            // boundary minute - a file held open by the game, an antivirus scan, a busy disk -
+            // was recorded as success and never retried until the next boundary, potentially a
+            // week later. See ARCHITECTURE-REVIEW.md finding [S-1].
+            if (succeeded == total)
             {
-                // Time to unlock
-                await UnlockAllFoldersAsync();
+                _wasWithinAllowedTime = isWithinAllowedTime;
+                _isFirstRun = false;
             }
             else
             {
-                // Time to lock
-                await LockAllFoldersAsync();
+                _logger.LogError(
+                    "Only {Succeeded} of {Total} folder(s) reached the required state ({Desired}). " +
+                    "The transition has NOT been recorded and will be retried on the next cycle.",
+                    succeeded, total, isWithinAllowedTime ? "unlocked" : "locked");
             }
-
-            _wasWithinAllowedTime = isWithinAllowedTime;
-            _isFirstRun = false;
         }
         else if (isWithinAllowedTime)
         {
@@ -163,10 +173,14 @@ public sealed class GameLockerService : BackgroundService
         }
     }
 
-    private async Task LockAllFoldersAsync()
+    /// <summary>
+    /// Locks every configured folder.
+    /// </summary>
+    /// <returns>The number of folders that reached the locked state.</returns>
+    private async Task<int> LockAllFoldersAsync()
     {
         _logger.LogInformation("Locking all game folders...");
-        
+
         var successCount = 0;
 
         foreach (var folderPath in _config!.GameFolderPaths)
@@ -192,17 +206,34 @@ public sealed class GameLockerService : BackgroundService
             }
         }
 
+        // Notifications must never affect the outcome. A LocalSystem service runs in session 0
+        // with no registered AUMID, so ToastContentBuilder.Show() can throw - which previously
+        // unwound past the state assignment and caused the whole lock to repeat every cycle.
+        // See ARCHITECTURE-REVIEW.md finding [S-6].
         if (_config.NotificationsEnabled && successCount > 0)
         {
-            var nextUnlock = _config.GetNextUnlockTime(DateTime.Now);
-            NotificationHelper.ShowLockNotification(successCount, nextUnlock);
+            try
+            {
+                var nextUnlock = _config.GetNextUnlockTime(DateTime.Now);
+                NotificationHelper.ShowLockNotification(successCount, nextUnlock);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Could not show lock notification: {Message}", ex.Message);
+            }
         }
+
+        return successCount;
     }
 
-    private async Task UnlockAllFoldersAsync()
+    /// <summary>
+    /// Unlocks every configured folder.
+    /// </summary>
+    /// <returns>The number of folders that reached the unlocked state.</returns>
+    private async Task<int> UnlockAllFoldersAsync()
     {
         _logger.LogInformation("Unlocking all game folders...");
-        
+
         var successCount = 0;
 
         foreach (var folderPath in _config!.GameFolderPaths)
@@ -230,12 +261,21 @@ public sealed class GameLockerService : BackgroundService
 
         if (_config.NotificationsEnabled && successCount > 0)
         {
-            var lockTime = _config.GetNextLockTime(DateTime.Now);
-            NotificationHelper.ShowUnlockNotification(successCount, lockTime);
+            try
+            {
+                var lockTime = _config.GetNextLockTime(DateTime.Now);
+                NotificationHelper.ShowUnlockNotification(successCount, lockTime);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Could not show unlock notification: {Message}", ex.Message);
+            }
         }
 
         // Reset warning time
         _lastWarningTime = null;
+
+        return successCount;
     }
 
     private Task CheckAndShowWarningAsync(DateTime now)
@@ -288,18 +328,24 @@ public sealed class GameLockerService : BackgroundService
                 {
                     var now = DateTime.Now;
                     var isWithinAllowedTime = _config.IsWithinAllowedTime(now);
-                    
-                    if (isWithinAllowedTime)
+                    var total = _config.GameFolderPaths.Count;
+
+                    var succeeded = isWithinAllowedTime
+                        ? await UnlockAllFoldersAsync()
+                        : await LockAllFoldersAsync();
+
+                    if (succeeded == total)
                     {
-                        await UnlockAllFoldersAsync();
+                        _wasWithinAllowedTime = isWithinAllowedTime;
+                        _logger.LogInformation("Configuration reloaded and applied immediately.");
                     }
                     else
                     {
-                        await LockAllFoldersAsync();
+                        _logger.LogError(
+                            "Configuration reloaded, but only {Succeeded} of {Total} folder(s) reached " +
+                            "the required state. The transition will be retried on the next cycle.",
+                            succeeded, total);
                     }
-                    
-                    _wasWithinAllowedTime = isWithinAllowedTime;
-                    _logger.LogInformation("Configuration reloaded and applied immediately.");
                 }
             }
         }
@@ -330,16 +376,30 @@ public sealed class GameLockerService : BackgroundService
 
                     _logger.LogInformation("Immediate command received: {Action} for {Folder}", action, folderPath);
 
-                    switch (action.ToLower())
+                    // The command file lives in a directory that has historically been writable by
+                    // every user on the machine, and this service runs as LocalSystem. Without this
+                    // check, any unprivileged user could make SYSTEM grant them access to - or
+                    // encrypt - an arbitrary path such as C:\Windows.
+                    // See ARCHITECTURE-REVIEW.md findings [V-1] and [V-4].
+                    if (!IsManagedFolder(folderPath, out var resolvedPath))
+                    {
+                        _logger.LogWarning(
+                            "Rejected immediate command {Action}: '{Folder}' is not a configured game folder. " +
+                            "Commands are only honoured for folders present in the saved configuration.",
+                            action, folderPath);
+                        return;
+                    }
+
+                    switch (action.ToLowerInvariant())
                     {
                         case "lock":
-                            await LockSingleFolderAsync(folderPath);
+                            await LockSingleFolderAsync(resolvedPath);
                             break;
                         case "unlock":
-                            await UnlockSingleFolderAsync(folderPath);
+                            await UnlockSingleFolderAsync(resolvedPath);
                             break;
                         case "remove":
-                            await RemoveFolderAsync(folderPath);
+                            await RemoveFolderAsync(resolvedPath);
                             break;
                         default:
                             _logger.LogWarning("Unknown immediate action: {Action}", action);
@@ -352,6 +412,56 @@ public sealed class GameLockerService : BackgroundService
         {
             _logger.LogError(ex, "Error processing immediate commands: {Message}", ex.Message);
         }
+    }
+
+    /// <summary>
+    /// Determines whether a path supplied by an external command refers to a folder in the saved
+    /// configuration, and resolves it to the configured spelling.
+    /// </summary>
+    /// <param name="requestedPath">The raw path taken from the command file.</param>
+    /// <param name="resolvedPath">The matching configured path, when the check succeeds.</param>
+    /// <returns><c>true</c> when the path is managed by GameLocker; otherwise <c>false</c>.</returns>
+    private bool IsManagedFolder(string requestedPath, out string resolvedPath)
+    {
+        resolvedPath = string.Empty;
+
+        if (string.IsNullOrWhiteSpace(requestedPath) || _config == null)
+            return false;
+
+        string candidate;
+        try
+        {
+            candidate = Normalize(requestedPath);
+        }
+        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
+        {
+            _logger.LogWarning("Rejected malformed command path '{Folder}': {Message}", requestedPath, ex.Message);
+            return false;
+        }
+
+        foreach (var configured in _config.GameFolderPaths)
+        {
+            string known;
+            try
+            {
+                known = Normalize(configured);
+            }
+            catch
+            {
+                continue; // A malformed entry in config cannot authorise anything.
+            }
+
+            if (string.Equals(candidate, known, StringComparison.OrdinalIgnoreCase))
+            {
+                resolvedPath = configured;
+                return true;
+            }
+        }
+
+        return false;
+
+        static string Normalize(string path) =>
+            Path.TrimEndingDirectorySeparator(Path.GetFullPath(path));
     }
 
     private async Task LockSingleFolderAsync(string folderPath)

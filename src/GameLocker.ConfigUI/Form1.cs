@@ -133,7 +133,7 @@ public partial class Form1 : Form
         }
     }
 
-    private async void btnAddFolder_Click(object sender, EventArgs e)
+    private void btnAddFolder_Click(object sender, EventArgs e)
     {
         using var dialog = new FolderBrowserDialog
         {
@@ -159,10 +159,13 @@ public partial class Form1 : Form
                 // Auto-select the newly added folder
                 lstFolders.SelectedItem = dialog.SelectedPath;
                 
-                ShowStatus($"Added folder: {dialog.SelectedPath}. Checking service status...", false);
-                
-                // Check if service is running and apply configuration immediately
-                await TriggerImmediateFolderProcessingAsync("add", dialog.SelectedPath);
+                // No immediate lock command is sent here. The folder is not in the saved
+                // configuration yet, and the service now refuses commands for folders it does not
+                // manage - see ARCHITECTURE-REVIEW.md finding [V-1]. Clicking Save writes the
+                // configuration and signals the service, which then applies the correct state.
+                ShowStatus(
+                    $"Added folder: {dialog.SelectedPath}. Click Save to apply it to the schedule.",
+                    false);
             }
             else
             {
@@ -757,62 +760,11 @@ public partial class Form1 : Form
         }
     }
 
-    private async Task TriggerImmediateFolderProcessingAsync(string action, string folderPath)
-    {
-        try
-        {
-            // Check service status
-            var serviceStatus = ServiceManager.GetServiceStatus();
-            
-            if (serviceStatus == null)
-            {
-                ShowStatus("GameLocker Service not found. Please ensure the service is installed.", true);
-                return;
-            }
-            
-            if (serviceStatus != ServiceControllerStatus.Running)
-            {
-                ShowStatus($"GameLocker Service is {serviceStatus}. Attempting to start...", false);
-                
-                var started = await ServiceManager.StartServiceAsync();
-                if (!started)
-                {
-                    ShowStatus("Failed to start GameLocker Service. Please start it manually.", true);
-                    return;
-                }
-                
-                ShowStatus("GameLocker Service started successfully.", false);
-            }
-            
-            // Send immediate command to the service
-            string command = action switch
-            {
-                "add" => "lock", // When adding a folder, we want to lock it if we're outside gaming hours
-                "remove" => "unlock", // When removing a folder, we always want to unlock it
-                _ => action
-            };
-            
-            var commandSent = await ServiceManager.SendImmediateActionCommandAsync(command, folderPath);
-            
-            if (commandSent)
-            {
-                ShowStatus($"Command sent to service: {command} folder '{folderPath}'", false);
-                
-                // For remove operations, give a bit more time for processing
-                if (action == "remove")
-                {
-                    await Task.Delay(2000); // Wait 2 seconds for the service to process
-                }
-            }
-            else
-            {
-                ShowStatus("Failed to send command to service.", true);
-            }
-        }
-        catch (Exception ex)
-        {
-            ShowStatus($"Error communicating with service: {ex.Message}", true);
-        }
-    }
+    // TriggerImmediateFolderProcessingAsync was removed. It fired an immediate lock command for a
+    // folder that had not yet been written to the configuration, and reported "Command sent to
+    // service" as though the work had been done - there is no acknowledgement on that channel.
+    // Saving the configuration signals the service, which then applies the correct schedule state.
+    // The command channel itself is replaced with an ACL'd named pipe in Phase 3 of
+    // REMEDIATION-PLAN.md. See ARCHITECTURE-REVIEW.md findings [S-9] and [V-1].
 }
 

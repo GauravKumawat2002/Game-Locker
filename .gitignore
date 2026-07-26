@@ -107,3 +107,8 @@ Validate-*.ps1
 # Game folder test data (if any)
 test-games/
 sample-folders/
+.pi
+.claude
+.codex
+.github
+.agents
