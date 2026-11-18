@@ -182,6 +182,40 @@ public static class AclHelper
         }
     }
 
+    internal static void RemoveLegacyGameLockerDenies(string folderPath)
+    {
+        var folder = new DirectoryInfo(folderPath);
+        var security = folder.GetAccessControl(AccessControlSections.Access | AccessControlSections.Owner);
+        var users = new SecurityIdentifier(WellKnownSidType.BuiltinUsersSid, null);
+        var authenticated = new SecurityIdentifier(WellKnownSidType.AuthenticatedUserSid, null);
+        var system = new SecurityIdentifier(WellKnownSidType.LocalSystemSid, null);
+        var owner = security.GetOwner(typeof(SecurityIdentifier));
+        var rules = security.GetAccessRules(true, false, typeof(SecurityIdentifier))
+            .Cast<FileSystemAccessRule>()
+            .Where(rule => rule.AccessControlType == AccessControlType.Deny &&
+                rule.InheritanceFlags == LockInheritanceFlags && rule.PropagationFlags == PropagationFlags.None)
+            .ToList();
+
+        if (!rules.Any(rule => rule.IdentityReference.Equals(users) &&
+            (rule.FileSystemRights == LockedDenyRights || rule.FileSystemRights == FileSystemRights.FullControl)))
+        {
+            return;
+        }
+
+        foreach (var rule in rules)
+        {
+            var sid = rule.IdentityReference;
+            if ((sid.Equals(users) && rule.FileSystemRights == LockedDenyRights) ||
+                (rule.FileSystemRights == FileSystemRights.FullControl &&
+                    (sid.Equals(users) || sid.Equals(authenticated) || sid.Equals(system) || sid.Equals(owner))))
+            {
+                security.RemoveAccessRuleSpecific(rule);
+            }
+        }
+
+        folder.SetAccessControl(security);
+    }
+
     /// <summary>
     /// Gets the current access control list for a folder.
     /// </summary>

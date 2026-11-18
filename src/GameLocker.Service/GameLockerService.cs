@@ -1,353 +1,485 @@
+using System.Diagnostics;
 using GameLocker.Common.Configuration;
 using GameLocker.Common.Models;
 using GameLocker.Common.Notifications;
+using GameLocker.Common.Security;
 using GameLocker.Common.Services;
 
 namespace GameLocker.Service;
 
 /// <summary>
-/// Main Windows Service for GameLocker.
-/// Monitors schedule and enforces game folder lock/unlock.
+/// The GameLocker Windows Service. Continuously reconciles each configured folder's actual state
+/// against the state the schedule requires.
 /// </summary>
+/// <remarks>
+/// This is a convergence loop, not a state machine. Earlier versions acted only when a boolean
+/// flipped from "allowed" to "not allowed", and updated that flag whether or not the work had
+/// succeeded - so one transient failure at the boundary minute meant the folders stayed unlocked
+/// for the entire period, with nothing retried and nothing reported. That is the "sometimes it
+/// works, sometimes it doesn't" behaviour.
+/// <para>
+/// Every cycle now asks the same two questions for every folder - what should it be, and what is it
+/// - and acts on the difference. The result of an action is never trusted: the folder is re-observed
+/// afterwards, and only a folder that genuinely reached the required state counts as done.
+/// See ARCHITECTURE-REVIEW.md findings [S-1], [S-3], [S-4], [S-5] and [S-7].
+/// </para>
+/// </remarks>
 public sealed class GameLockerService : BackgroundService
 {
+    private static readonly TimeSpan TickInterval = TimeSpan.FromSeconds(15);
+    private static readonly TimeSpan ClockJumpThreshold = TimeSpan.FromSeconds(30);
+    private static readonly TimeSpan RetryInitialDelay = TimeSpan.FromSeconds(15);
+    private static readonly TimeSpan RetryMaxDelay = TimeSpan.FromMinutes(15);
+    private static readonly TimeSpan ProblemLogInterval = TimeSpan.FromMinutes(10);
+
     private readonly ILogger<GameLockerService> _logger;
     private readonly ConfigManager _configManager;
     private readonly FolderLocker _folderLocker;
-    
+
+    private readonly RetryPolicy _retryPolicy = new(RetryInitialDelay, RetryMaxDelay);
+    private readonly LockWarningTracker _warnings = new(15, 5);
+    private readonly ClockDriftDetector _clockDrift = new(ClockJumpThreshold);
+    private readonly Stopwatch _monotonic = Stopwatch.StartNew();
+
     private GameLockerConfig? _config;
-    private bool _wasWithinAllowedTime = false;
-    private bool _isFirstRun = true;
-    private DateTime? _lastWarningTime = null;
+    private bool? _lastAnnouncedAllowed;
+    private DateTime _lastProblemLogUtc = DateTime.MinValue;
 
     public GameLockerService(ILogger<GameLockerService> logger)
     {
         _logger = logger;
         _configManager = new ConfigManager();
-        _folderLocker = new FolderLocker(_configManager.ConfigDirectory);
+        _folderLocker = new FolderLocker(_configManager.ConfigDirectory, logger);
     }
 
+    /// <inheritdoc />
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        _logger.LogInformation("GameLocker Service starting...");
+        _logger.LogInformation(
+            "GameLocker Service starting. Reconciling every {Seconds} seconds.",
+            TickInterval.TotalSeconds);
 
-        try
+        // Restrict the state store on every start, not only at install time.
+        if (!_folderLocker.StateStore.EnsureSecured())
+            throw new UnauthorizedAccessException($"Could not secure {_folderLocker.StateStore.StateDirectory}.");
+
+        while (!stoppingToken.IsCancellationRequested)
         {
-            // Initialize the folder locker
-            await _folderLocker.InitializeAsync();
-
-            // Load initial configuration
-            await LoadConfigurationAsync();
-
-            if (_config == null)
+            try
             {
-                _logger.LogWarning("No configuration found. Service will wait for configuration.");
+                await ReconcileAsync(stoppingToken);
             }
-            else
+            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
             {
-                _logger.LogInformation("Configuration loaded. Monitoring {count} folder(s).", 
-                    _config.GameFolderPaths.Count);
-                
-                // Notify service started
-                if (_config.NotificationsEnabled)
-                {
-                    NotificationHelper.ShowServiceStartedNotification();
-                }
+                break;
+            }
+            catch (Exception ex)
+            {
+                // A single bad cycle must never take the loop down; the next one re-observes
+                // everything from scratch anyway.
+                _logger.LogError(ex, "Reconciliation cycle failed: {Message}", ex.Message);
             }
 
-            // Main service loop
-            while (!stoppingToken.IsCancellationRequested)
+            try
             {
-                try
-                {
-                    // Check for immediate commands first
-                    await ProcessImmediateCommandsAsync();
-                    
-                    // Check for reload signals
-                    await ProcessReloadSignalAsync();
-                    
-                    // Process regular schedule
-                    await ProcessScheduleAsync();
-                }
-                catch (Exception ex)
-                {
-                    _logger.LogError(ex, "Error during service processing: {Message}", ex.Message);
-                }
-
-                // Wait for a short interval then check for immediate commands again
-                // Use 5 second polling for responsive command handling
-                for (int i = 0; i < 12; i++) // 12 x 5 seconds = 1 minute
-                {
-                    await Task.Delay(TimeSpan.FromSeconds(5), stoppingToken);
-                    
-                    // Check for immediate commands frequently
-                    await ProcessImmediateCommandsAsync();
-                    await ProcessReloadSignalAsync();
-                }
-
-                // Reload configuration periodically (in case it changed)
-                await LoadConfigurationAsync();
+                await Task.Delay(TickInterval, stoppingToken);
+            }
+            catch (OperationCanceledException)
+            {
+                break;
             }
         }
-        catch (OperationCanceledException)
-        {
-            // Service is stopping, this is expected
-            _logger.LogInformation("GameLocker Service received stop signal.");
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Fatal error in GameLocker Service: {Message}", ex.Message);
-            
-            // Exit with error code so Windows Service Manager can restart
-            Environment.Exit(1);
-        }
+
+        _logger.LogInformation("GameLocker Service stopped.");
     }
 
+    /// <inheritdoc />
     public override async Task StopAsync(CancellationToken cancellationToken)
     {
         _logger.LogInformation("GameLocker Service stopping...");
 
         if (_config?.NotificationsEnabled == true)
-        {
-            NotificationHelper.ShowServiceStoppedNotification();
-        }
+            TryNotify(NotificationHelper.ShowServiceStoppedNotification);
 
         await base.StopAsync(cancellationToken);
     }
 
-    private async Task LoadConfigurationAsync()
+    /// <summary>
+    /// Runs one reconciliation cycle.
+    /// </summary>
+    /// <param name="cancellationToken">Cancels the cycle when the service is stopping.</param>
+    private async Task ReconcileAsync(CancellationToken cancellationToken)
     {
-        var newConfig = await _configManager.LoadConfigAsync();
-        
-        if (newConfig != null)
-        {
-            _config = newConfig;
-            _logger.LogDebug("Configuration reloaded.");
-        }
-    }
+        DetectClockJump();
 
-    private async Task ProcessScheduleAsync()
-    {
-        if (_config == null || _config.GameFolderPaths.Count == 0)
-        {
+        await LoadConfigurationAsync();
+        await ProcessReloadSignalAsync();
+        await ProcessImmediateCommandsAsync();
+
+        // Captured after every step that can replace it, so the rest of the cycle works from one
+        // consistent view.
+        var config = _config;
+        await RestoreRemovedFoldersAsync(config, cancellationToken);
+
+        if (config is null || config.GameFolderPaths.Count == 0)
             return;
-        }
 
         var now = DateTime.Now;
-        var isWithinAllowedTime = _config.IsWithinAllowedTime(now);
+        var utcNow = DateTime.UtcNow;
+        var allowed = config.IsWithinAllowedTime(now);
+        var desired = allowed ? FolderState.Unlocked : FolderState.Locked;
 
-        _logger.LogDebug("Schedule check at {Time}: AllowedTime={IsAllowed}", 
-            now, isWithinAllowedTime);
+        var total = config.GameFolderPaths.Count;
+        var correct = 0;
+        var changed = 0;
+        var failed = 0;
+        var deferred = 0;
 
-        // Check if state changed or if this is the first run
-        if (_isFirstRun || isWithinAllowedTime != _wasWithinAllowedTime)
+        foreach (var folderPath in config.GameFolderPaths)
         {
-            var total = _config.GameFolderPaths.Count;
+            cancellationToken.ThrowIfCancellationRequested();
+            var retryKey = $"{desired}|{folderPath}";
 
-            var succeeded = isWithinAllowedTime
-                ? await UnlockAllFoldersAsync()
-                : await LockAllFoldersAsync();
+            var observed = _folderLocker.GetFolderState(folderPath);
 
-            // Only record the transition once every folder actually reached the required state.
-            // This was previously assigned unconditionally, so a single transient failure at the
-            // boundary minute - a file held open by the game, an antivirus scan, a busy disk -
-            // was recorded as success and never retried until the next boundary, potentially a
-            // week later. See ARCHITECTURE-REVIEW.md finding [S-1].
-            if (succeeded == total)
+            if (observed == desired)
             {
-                _wasWithinAllowedTime = isWithinAllowedTime;
-                _isFirstRun = false;
+                _retryPolicy.RecordSuccess(retryKey);
+                correct++;
+                continue;
+            }
+
+            if (!_retryPolicy.ShouldAttempt(retryKey, utcNow))
+            {
+                deferred++;
+                continue;
+            }
+
+            _logger.LogInformation(
+                "{Folder} is {Observed} but should be {Desired}. Converging.",
+                folderPath, observed, desired);
+
+            var error = desired == FolderState.Locked
+                ? await TryLockAsync(folderPath)
+                : await TryUnlockAsync(folderPath);
+
+            // Re-observe. The return value of the operation is not evidence: the whole class of
+            // "reported success while the folder was untouched" bugs came from believing it.
+            var after = _folderLocker.GetFolderState(folderPath);
+
+            if (after == desired)
+            {
+                _retryPolicy.RecordSuccess(retryKey);
+                correct++;
+                changed++;
+                _logger.LogInformation("{Folder} is now {State}.", folderPath, after);
             }
             else
             {
+                failed++;
+                var delay = _retryPolicy.RecordFailure(retryKey, utcNow);
+
                 _logger.LogError(
-                    "Only {Succeeded} of {Total} folder(s) reached the required state ({Desired}). " +
-                    "The transition has NOT been recorded and will be retried on the next cycle.",
-                    succeeded, total, isWithinAllowedTime ? "unlocked" : "locked");
+                    "{Folder} is still {Observed} after attempting to make it {Desired} " +
+                    "(attempt {Attempt}). {Error} Retrying in {Delay}.",
+                    folderPath, after, desired, _retryPolicy.FailureCount(retryKey),
+                    error ?? "No error was reported.", delay);
             }
         }
-        else if (isWithinAllowedTime)
+
+        if (changed > 0 || failed > 0 || deferred > 0)
         {
-            // Check if we should show a warning
-            await CheckAndShowWarningAsync(now);
+            _logger.LogInformation(
+                "Reconciled: {Correct}/{Total} correct, {Changed} changed, {Failed} failed, {Deferred} deferred.",
+                correct, total, changed, failed, deferred);
+        }
+
+        AnnounceTransition(allowed, correct, total, now);
+        ShowWarningIfDue(allowed, now);
+    }
+
+    private async Task RestoreRemovedFoldersAsync(GameLockerConfig? config, CancellationToken cancellationToken)
+    {
+        var configured = (config?.GameFolderPaths ?? []).Select(NormalizeConfiguredPath)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var restore = _folderLocker.StateStore.LoadAll(LogProblemThrottled)
+            .Where(record => record.HasOutstandingChanges &&
+                (record.TestLock || (config is not null && !configured.Contains(record.FolderPath))))
+            .Select(record => record.FolderPath)
+            .Concat((config?.FoldersPendingRestore ?? []).Select(NormalizeConfiguredPath)
+                .Where(path => !configured.Contains(path)))
+            .Distinct(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var folder in restore)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var retryKey = $"restore|{folder}";
+            var now = DateTime.UtcNow;
+            if (!_retryPolicy.ShouldAttempt(retryKey, now))
+                continue;
+
+            if (_folderLocker.GetFolderState(folder) == FolderState.Unlocked)
+            {
+                _retryPolicy.RecordSuccess(retryKey);
+                continue;
+            }
+
+            var error = await TryUnlockAsync(folder);
+            if (error is null)
+            {
+                _retryPolicy.RecordSuccess(retryKey);
+                _logger.LogInformation("Restored permissions and vault data for {Folder}.", folder);
+            }
+            else
+            {
+                var delay = _retryPolicy.RecordFailure(retryKey, now);
+                _logger.LogWarning("Could not restore {Folder}: {Error}. Retrying in {Delay}.", folder, error, delay);
+            }
+        }
+    }
+
+    private static string NormalizeConfiguredPath(string path)
+    {
+        try { return PathGuard.Normalize(path); }
+        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
+        {
+            return path;
         }
     }
 
     /// <summary>
-    /// Locks every configured folder.
+    /// Notices that the wall clock has moved independently of elapsed time and forces a clean slate.
     /// </summary>
-    /// <returns>The number of folders that reached the locked state.</returns>
-    private async Task<int> LockAllFoldersAsync()
+    private void DetectClockJump()
     {
-        _logger.LogInformation("Locking all game folders...");
+        if (!_clockDrift.Sample(DateTime.UtcNow, _monotonic.Elapsed, out var drift))
+            return;
 
-        var successCount = 0;
+        _logger.LogWarning(
+            "The system clock moved by {Drift} relative to elapsed real time. " +
+            "This indicates sleep, resume, a daylight-saving transition, or a clock change. " +
+            "Retry backoff and pending warnings have been reset.",
+            drift);
 
-        foreach (var folderPath in _config!.GameFolderPaths)
-        {
-            try
-            {
-                var result = await _folderLocker.LockFolderAsync(folderPath);
-                
-                if (result.State == FolderState.Locked)
-                {
-                    successCount++;
-                    _logger.LogInformation("Locked folder: {Path}", folderPath);
-                }
-                else
-                {
-                    _logger.LogWarning("Failed to lock folder: {Path} - {Error}", 
-                        folderPath, result.LastError);
-                }
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Error locking folder: {Path}", folderPath);
-            }
-        }
-
-        // Notifications must never affect the outcome. A LocalSystem service runs in session 0
-        // with no registered AUMID, so ToastContentBuilder.Show() can throw - which previously
-        // unwound past the state assignment and caused the whole lock to repeat every cycle.
-        // See ARCHITECTURE-REVIEW.md finding [S-6].
-        if (_config.NotificationsEnabled && successCount > 0)
-        {
-            try
-            {
-                var nextUnlock = _config.GetNextUnlockTime(DateTime.Now);
-                NotificationHelper.ShowLockNotification(successCount, nextUnlock);
-            }
-            catch (Exception ex)
-            {
-                _logger.LogWarning(ex, "Could not show lock notification: {Message}", ex.Message);
-            }
-        }
-
-        return successCount;
+        // Every deadline held in memory was computed against a wall clock that is no longer
+        // comparable, so all of them are discarded and this cycle re-derives the truth.
+        _retryPolicy.Reset();
+        _warnings.Reset();
+        _lastAnnouncedAllowed = null;
     }
 
     /// <summary>
-    /// Unlocks every configured folder.
+    /// Announces a lock or unlock, but only once every folder has actually reached the new state.
     /// </summary>
-    /// <returns>The number of folders that reached the unlocked state.</returns>
-    private async Task<int> UnlockAllFoldersAsync()
+    /// <param name="allowed">Whether gaming is currently allowed.</param>
+    /// <param name="correct">How many folders are in the required state.</param>
+    /// <param name="total">How many folders are configured.</param>
+    /// <param name="now">The current local time.</param>
+    private void AnnounceTransition(bool allowed, int correct, int total, DateTime now)
     {
-        _logger.LogInformation("Unlocking all game folders...");
+        if (_lastAnnouncedAllowed == allowed || correct != total)
+            return;
 
-        var successCount = 0;
+        var isFirstObservation = _lastAnnouncedAllowed is null;
+        _lastAnnouncedAllowed = allowed;
 
-        foreach (var folderPath in _config!.GameFolderPaths)
+        // Nothing to announce on the first pass after startup - the folders were already in the
+        // right state and the user did not just experience a transition.
+        if (isFirstObservation)
+            return;
+
+        var config = _config;
+
+        if (config?.NotificationsEnabled != true)
+            return;
+
+        if (allowed)
         {
-            try
-            {
-                var result = await _folderLocker.UnlockFolderAsync(folderPath);
-                
-                if (result.State == FolderState.Unlocked)
-                {
-                    successCount++;
-                    _logger.LogInformation("Unlocked folder: {Path}", folderPath);
-                }
-                else
-                {
-                    _logger.LogWarning("Failed to unlock folder: {Path} - {Error}", 
-                        folderPath, result.LastError);
-                }
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Error unlocking folder: {Path}", folderPath);
-            }
+            var lockTime = config.GetNextLockTime(now);
+            TryNotify(() => NotificationHelper.ShowUnlockNotification(total, lockTime));
         }
-
-        if (_config.NotificationsEnabled && successCount > 0)
+        else
         {
-            try
-            {
-                var lockTime = _config.GetNextLockTime(DateTime.Now);
-                NotificationHelper.ShowUnlockNotification(successCount, lockTime);
-            }
-            catch (Exception ex)
-            {
-                _logger.LogWarning(ex, "Could not show unlock notification: {Message}", ex.Message);
-            }
+            var nextUnlock = config.GetNextUnlockTime(now);
+            TryNotify(() => NotificationHelper.ShowLockNotification(total, nextUnlock));
         }
-
-        // Reset warning time
-        _lastWarningTime = null;
-
-        return successCount;
     }
 
-    private Task CheckAndShowWarningAsync(DateTime now)
+    /// <summary>
+    /// Shows the "your session ends soon" warning when a threshold has just been crossed.
+    /// </summary>
+    /// <param name="allowed">Whether gaming is currently allowed.</param>
+    /// <param name="now">The current local time.</param>
+    private void ShowWarningIfDue(bool allowed, DateTime now)
     {
-        if (_config == null || !_config.NotificationsEnabled)
-            return Task.CompletedTask;
+        var config = _config;
 
-        var lockTime = _config.GetNextLockTime(now);
-        if (!lockTime.HasValue)
-            return Task.CompletedTask;
+        if (config is null)
+            return;
 
-        var timeRemaining = lockTime.Value - now;
-        
-        // Show warnings at 15 minutes and 5 minutes before lock
-        if (timeRemaining.TotalMinutes <= 15 && timeRemaining.TotalMinutes > 14 && 
-            _lastWarningTime != lockTime.Value.AddMinutes(-15))
-        {
-            NotificationHelper.ShowWarningNotification(15);
-            _lastWarningTime = lockTime.Value.AddMinutes(-15);
-        }
-        else if (timeRemaining.TotalMinutes <= 5 && timeRemaining.TotalMinutes > 4 && 
-                 _lastWarningTime != lockTime.Value.AddMinutes(-5))
-        {
-            NotificationHelper.ShowWarningNotification(5);
-            _lastWarningTime = lockTime.Value.AddMinutes(-5);
-        }
+        // Passing null when no window is open is what re-arms the thresholds for the next one.
+        var lockTime = allowed ? config.GetNextLockTime(now) : null;
+        var threshold = _warnings.GetWarningToShow(lockTime, now);
 
-        return Task.CompletedTask;
+        if (threshold is null || !config.NotificationsEnabled)
+            return;
+
+        TryNotify(() => NotificationHelper.ShowWarningNotification(threshold.Value));
     }
 
-    private async Task ProcessReloadSignalAsync()
+    /// <summary>
+    /// Locks one folder and returns the reported error, if any.
+    /// </summary>
+    /// <param name="folderPath">The folder to lock.</param>
+    /// <returns>The error message, or <c>null</c>.</returns>
+    private async Task<string?> TryLockAsync(string folderPath)
     {
         try
         {
-            var configDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "GameLocker");
-            var signalFile = Path.Combine(configDir, "reload_signal");
+            var config = _config;
+            var mode = config?.LockMode ?? LockMode.AclOnly;
 
-            if (File.Exists(signalFile))
-            {
-                _logger.LogInformation("Reload signal received. Reloading configuration...");
-                
-                // Delete signal file
-                File.Delete(signalFile);
-                
-                // Force reload configuration
-                await LoadConfigurationAsync();
-                
-                // Apply current state based on new config
-                if (_config != null)
+            // The vault settings are only consulted when the user has explicitly opted in. In the
+            // default AclOnly mode nothing reads or writes a single file.
+            var vaultSettings = mode == LockMode.AclAndVault && config is not null
+                ? config.GetFolderEncryptionSettings(folderPath)
+                : null;
+
+            var result = await _folderLocker.LockFolderAsync(folderPath, mode, vaultSettings);
+
+            return result.LastError;
+        }
+        catch (Exception ex)
+        {
+            return ex.Message;
+        }
+    }
+
+    /// <summary>
+    /// Unlocks one folder and returns the reported error, if any.
+    /// </summary>
+    /// <param name="folderPath">The folder to unlock.</param>
+    /// <returns>The error message, or <c>null</c>.</returns>
+    private async Task<string?> TryUnlockAsync(string folderPath)
+    {
+        try
+        {
+            var result = await _folderLocker.UnlockFolderAsync(folderPath);
+            return result.LastError;
+        }
+        catch (Exception ex)
+        {
+            return ex.Message;
+        }
+    }
+
+    /// <summary>
+    /// Reloads the configuration, distinguishing "not saved yet" from "damaged".
+    /// </summary>
+    private async Task LoadConfigurationAsync()
+    {
+        var result = await _configManager.LoadConfigResultAsync();
+
+        switch (result.Status)
+        {
+            case ConfigLoadStatus.Loaded:
+                var isFirstLoad = _config is null;
+                var loaded = result.Config!;
+                _config = loaded;
+
+                if (isFirstLoad)
                 {
-                    var now = DateTime.Now;
-                    var isWithinAllowedTime = _config.IsWithinAllowedTime(now);
-                    var total = _config.GameFolderPaths.Count;
+                    _logger.LogInformation(
+                        "Configuration loaded. Monitoring {Count} folder(s) in {Mode} mode.",
+                        loaded.GameFolderPaths.Count, loaded.LockMode);
 
-                    var succeeded = isWithinAllowedTime
-                        ? await UnlockAllFoldersAsync()
-                        : await LockAllFoldersAsync();
-
-                    if (succeeded == total)
-                    {
-                        _wasWithinAllowedTime = isWithinAllowedTime;
-                        _logger.LogInformation("Configuration reloaded and applied immediately.");
-                    }
-                    else
-                    {
-                        _logger.LogError(
-                            "Configuration reloaded, but only {Succeeded} of {Total} folder(s) reached " +
-                            "the required state. The transition will be retried on the next cycle.",
-                            succeeded, total);
-                    }
+                    if (loaded.NotificationsEnabled)
+                        TryNotify(NotificationHelper.ShowServiceStartedNotification);
                 }
-            }
+
+                break;
+
+            case ConfigLoadStatus.NotFound when _config is not null:
+                // The file was there a moment ago. Keep running on what we have rather than
+                // silently stopping enforcement.
+                LogProblemThrottled(
+                    "The configuration file has disappeared. Continuing with the last known " +
+                    "configuration; folders are still being enforced.");
+                break;
+
+            case ConfigLoadStatus.NotFound:
+                LogProblemThrottled("No configuration has been saved yet. Waiting for the ConfigUI.");
+                break;
+
+            case ConfigLoadStatus.Unreadable:
+                // Never treated as a first run. A damaged configuration is an error the user has to
+                // know about, not an empty one to be quietly adopted.
+                LogProblemThrottled(
+                    $"The configuration exists but could not be read: {result.Error} " +
+                    (_config is null
+                        ? "No folders are being enforced. Restore config.dat.bak or reconfigure."
+                        : "Continuing with the last known configuration."));
+                break;
+        }
+    }
+
+    /// <summary>
+    /// Logs a persistent problem at most once per <see cref="ProblemLogInterval"/>.
+    /// </summary>
+    /// <param name="message">The message to log.</param>
+    private void LogProblemThrottled(string message)
+    {
+        var utcNow = DateTime.UtcNow;
+
+        if (utcNow - _lastProblemLogUtc < ProblemLogInterval)
+            return;
+
+        _lastProblemLogUtc = utcNow;
+        _logger.LogWarning("{Message}", message);
+    }
+
+    /// <summary>
+    /// Runs a notification without letting it affect the caller.
+    /// </summary>
+    /// <param name="show">The notification to show.</param>
+    /// <remarks>
+    /// A LocalSystem service runs in session 0 with no registered application identity, so a toast
+    /// can fail. It previously did so on the path that recorded the state transition, which left
+    /// the service re-attempting the whole lock every cycle.
+    /// See ARCHITECTURE-REVIEW.md finding [S-6].
+    /// </remarks>
+    private void TryNotify(Action show)
+    {
+        try
+        {
+            show();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Could not show notification: {Message}", ex.Message);
+        }
+    }
+
+    /// <summary>
+    /// Consumes the reload signal written by the ConfigUI on save.
+    /// </summary>
+    private async Task ProcessReloadSignalAsync()
+    {
+        var signalFile = Path.Combine(_configManager.ConfigDirectory, "reload_signal");
+
+        if (!File.Exists(signalFile))
+            return;
+
+        try
+        {
+            File.Delete(signalFile);
+            _logger.LogInformation("Reload signal received.");
+
+            await LoadConfigurationAsync();
+
+            // The user has just changed something, so give every folder an immediate attempt
+            // rather than waiting out any backoff from before the change.
+            _retryPolicy.Reset();
         }
         catch (Exception ex)
         {
@@ -355,77 +487,84 @@ public sealed class GameLockerService : BackgroundService
         }
     }
 
+    /// <summary>
+    /// Consumes a one-shot command written by the ConfigUI.
+    /// </summary>
+    /// <remarks>
+    /// This file-based channel is replaced by an access-controlled named pipe in Phase 3 of
+    /// REMEDIATION-PLAN.md. Until then every path is checked against the folders GameLocker
+    /// actually manages, because the directory has historically been writable by any user and this
+    /// service runs as LocalSystem. See ARCHITECTURE-REVIEW.md findings [V-1] and [S-9].
+    /// <para>
+    /// Note that a manual lock or unlock does not survive the schedule: the next reconciliation
+    /// cycle restores whatever the schedule requires. That is deliberate.
+    /// </para>
+    /// </remarks>
     private async Task ProcessImmediateCommandsAsync()
     {
+        var commandFile = Path.Combine(_configManager.ConfigDirectory, "immediate_action");
+
+        if (!File.Exists(commandFile))
+            return;
+
         try
         {
-            var configDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "GameLocker");
-            var commandFile = Path.Combine(configDir, "immediate_action");
+            var commandText = await File.ReadAllTextAsync(commandFile);
+            File.Delete(commandFile);
 
-            if (File.Exists(commandFile))
+            var parts = commandText.Split('|');
+
+            if (parts.Length < 3)
             {
-                var commandText = await File.ReadAllTextAsync(commandFile);
-                File.Delete(commandFile);
-
-                var parts = commandText.Split('|');
-                if (parts.Length >= 3)
-                {
-                    var action = parts[0];
-                    var folderPath = parts[1];
-                    var timestamp = parts[2];
-
-                    _logger.LogInformation("Immediate command received: {Action} for {Folder}", action, folderPath);
-
-                    // The command file lives in a directory that has historically been writable by
-                    // every user on the machine, and this service runs as LocalSystem. Without this
-                    // check, any unprivileged user could make SYSTEM grant them access to - or
-                    // encrypt - an arbitrary path such as C:\Windows.
-                    // See ARCHITECTURE-REVIEW.md findings [V-1] and [V-4].
-                    if (!IsManagedFolder(folderPath, out var resolvedPath))
-                    {
-                        _logger.LogWarning(
-                            "Rejected immediate command {Action}: '{Folder}' is not a configured game folder. " +
-                            "Commands are only honoured for folders present in the saved configuration.",
-                            action, folderPath);
-                        return;
-                    }
-
-                    switch (action.ToLowerInvariant())
-                    {
-                        case "lock":
-                            await LockSingleFolderAsync(resolvedPath);
-                            break;
-                        case "unlock":
-                            await UnlockSingleFolderAsync(resolvedPath);
-                            break;
-                        case "remove":
-                            await RemoveFolderAsync(resolvedPath);
-                            break;
-                        default:
-                            _logger.LogWarning("Unknown immediate action: {Action}", action);
-                            break;
-                    }
-                }
+                _logger.LogWarning("Ignoring malformed command: {Command}", commandText);
+                return;
             }
+
+            var action = parts[0];
+            var folderPath = parts[1];
+
+            if (!IsManagedFolder(folderPath, allowRecoveryOnly: !action.Equals("lock", StringComparison.OrdinalIgnoreCase), out var resolvedPath))
+            {
+                _logger.LogWarning(
+                    "Rejected command '{Action}' for '{Folder}': it is not a folder GameLocker manages.",
+                    action, folderPath);
+                return;
+            }
+
+            _logger.LogInformation("Command received: {Action} for {Folder}", action, resolvedPath);
+
+            var error = action.ToLowerInvariant() switch
+            {
+                "lock" => await TryLockAsync(resolvedPath),
+                "unlock" or "remove" => await TryUnlockAsync(resolvedPath),
+                _ => $"Unknown action '{action}'.",
+            };
+
+            if (error is not null)
+                _logger.LogWarning("Command '{Action}' for {Folder} reported: {Error}", action, resolvedPath, error);
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error processing immediate commands: {Message}", ex.Message);
+            _logger.LogError(ex, "Error processing command file: {Message}", ex.Message);
         }
     }
 
     /// <summary>
-    /// Determines whether a path supplied by an external command refers to a folder in the saved
-    /// configuration, and resolves it to the configured spelling.
+    /// Determines whether an externally supplied path refers to a folder GameLocker manages.
     /// </summary>
-    /// <param name="requestedPath">The raw path taken from the command file.</param>
-    /// <param name="resolvedPath">The matching configured path, when the check succeeds.</param>
-    /// <returns><c>true</c> when the path is managed by GameLocker; otherwise <c>false</c>.</returns>
-    private bool IsManagedFolder(string requestedPath, out string resolvedPath)
+    /// <param name="requestedPath">The raw path from the command file.</param>
+    /// <param name="resolvedPath">The canonical path, when the check succeeds.</param>
+    /// <returns><c>true</c> when the path is managed.</returns>
+    /// <remarks>
+    /// Two sources count as authorisation, both of them writable only by an administrator: the
+    /// saved configuration, and the state store. The second matters because a folder being removed
+    /// from the configuration still needs to be unlocked afterwards.
+    /// </remarks>
+    private bool IsManagedFolder(string requestedPath, bool allowRecoveryOnly, out string resolvedPath)
     {
         resolvedPath = string.Empty;
 
-        if (string.IsNullOrWhiteSpace(requestedPath) || _config == null)
+        if (string.IsNullOrWhiteSpace(requestedPath))
             return false;
 
         string candidate;
@@ -439,7 +578,7 @@ public sealed class GameLockerService : BackgroundService
             return false;
         }
 
-        foreach (var configured in _config.GameFolderPaths)
+        foreach (var configured in _config?.GameFolderPaths ?? Enumerable.Empty<string>())
         {
             string known;
             try
@@ -448,7 +587,7 @@ public sealed class GameLockerService : BackgroundService
             }
             catch
             {
-                continue; // A malformed entry in config cannot authorise anything.
+                continue; // A malformed entry in the configuration cannot authorise anything.
             }
 
             if (string.Equals(candidate, known, StringComparison.OrdinalIgnoreCase))
@@ -458,73 +597,17 @@ public sealed class GameLockerService : BackgroundService
             }
         }
 
+        // Not in the configuration, but GameLocker has an outstanding record for it - so it locked
+        // this folder and is responsible for being able to unlock it again.
+        if (allowRecoveryOnly && _folderLocker.StateStore.TryLoad(candidate) is not null)
+        {
+            resolvedPath = candidate;
+            return true;
+        }
+
         return false;
 
         static string Normalize(string path) =>
             Path.TrimEndingDirectorySeparator(Path.GetFullPath(path));
-    }
-
-    private async Task LockSingleFolderAsync(string folderPath)
-    {
-        try
-        {
-            var result = await _folderLocker.LockFolderAsync(folderPath);
-            
-            if (result.State == FolderState.Locked)
-            {
-                _logger.LogInformation("Successfully locked folder: {Path}", folderPath);
-            }
-            else
-            {
-                _logger.LogWarning("Failed to lock folder: {Path} - {Error}", folderPath, result.LastError);
-            }
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Error locking single folder: {Path}", folderPath);
-        }
-    }
-
-    private async Task UnlockSingleFolderAsync(string folderPath)
-    {
-        try
-        {
-            var result = await _folderLocker.UnlockFolderAsync(folderPath);
-            
-            if (result.State == FolderState.Unlocked)
-            {
-                _logger.LogInformation("Successfully unlocked folder: {Path}", folderPath);
-            }
-            else
-            {
-                _logger.LogWarning("Failed to unlock folder: {Path} - {Error}", folderPath, result.LastError);
-            }
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Error unlocking single folder: {Path}", folderPath);
-        }
-    }
-
-    private async Task RemoveFolderAsync(string folderPath)
-    {
-        try
-        {
-            // Always attempt to unlock the folder when removing
-            var result = await _folderLocker.UnlockFolderAsync(folderPath);
-            
-            if (result.State == FolderState.Unlocked)
-            {
-                _logger.LogInformation("Successfully removed and unlocked folder: {Path}", folderPath);
-            }
-            else
-            {
-                _logger.LogWarning("Failed to fully unlock removed folder: {Path} - {Error}", folderPath, result.LastError);
-            }
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Error removing folder: {Path}", folderPath);
-        }
     }
 }

@@ -1,146 +1,223 @@
+using System.Security.Cryptography;
 using GameLocker.Common.Encryption;
 using GameLocker.Common.Models;
 using GameLocker.Common.Security;
+using GameLocker.Common.State;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace GameLocker.Common.Services;
 
-/// <summary>
-/// Manages locking and unlocking of game folders.
-/// Combines encryption and ACL controls for comprehensive protection.
-/// </summary>
+/// <summary>Locks and restores folders using a durable ACL and vault journal.</summary>
 public class FolderLocker
 {
     private readonly string _keyStorePath;
+    private readonly FolderStateStore _stateStore;
+    private readonly ILogger _logger;
     private byte[]? _masterKey;
     private byte[]? _masterIV;
 
-    /// <summary>
-    /// Creates a new FolderLocker with the specified key storage path.
-    /// </summary>
-    /// <param name="keyStorePath">Path to store encryption keys.</param>
-    public FolderLocker(string keyStorePath)
+    public FolderLocker(string keyStorePath, ILogger? logger = null)
+        : this(keyStorePath, new FolderStateStore(), logger)
+    {
+    }
+
+    public FolderLocker(string keyStorePath, FolderStateStore stateStore, ILogger? logger = null)
     {
         _keyStorePath = keyStorePath;
+        _stateStore = stateStore ?? throw new ArgumentNullException(nameof(stateStore));
+        _logger = logger ?? NullLogger.Instance;
     }
 
-    /// <summary>
-    /// Initializes the folder locker by loading or generating encryption keys.
-    /// </summary>
-    public async Task InitializeAsync()
+    public FolderStateStore StateStore => _stateStore;
+
+    /// <summary>Loads existing vault keys, or creates them before encrypting a first file.</summary>
+    public Task InitializeAsync() => LoadVaultKeysAsync(create: true);
+
+    private async Task LoadVaultKeysAsync(bool create)
     {
+        if (_masterKey is not null && _masterIV is not null)
+            return;
+
+        // Multiple folder operations can start with a single, shared key directory.
+        using var operation = _stateStore.BeginOperation(_keyStorePath);
         var keyPath = Path.Combine(_keyStorePath, "folder_key.dat");
         var ivPath = Path.Combine(_keyStorePath, "folder_iv.dat");
+        PathGuard.EnsureNoReparsePoints(keyPath);
+        PathGuard.EnsureNoReparsePoints(ivPath);
+        var hasKey = File.Exists(keyPath);
+        var hasIv = File.Exists(ivPath);
 
-        if (File.Exists(keyPath) && File.Exists(ivPath))
+        if (!hasKey && !hasIv && create)
         {
-            _masterKey = await DpapiHelper.UnprotectFromFileAsync(keyPath);
-            _masterIV = await DpapiHelper.UnprotectFromFileAsync(ivPath);
-        }
-        else
-        {
-            // Ensure directory exists
             Directory.CreateDirectory(_keyStorePath);
-
-            _masterKey = AesEncryptionHelper.GenerateKey();
-            _masterIV = AesEncryptionHelper.GenerateIV();
-
-            await DpapiHelper.ProtectToFileAsync(_masterKey, keyPath);
-            await DpapiHelper.ProtectToFileAsync(_masterIV, ivPath);
+            await DpapiHelper.ProtectToFileAsync(AesEncryptionHelper.GenerateKey(), keyPath);
+            await DpapiHelper.ProtectToFileAsync(AesEncryptionHelper.GenerateIV(), ivPath);
         }
+        else if (!hasKey || !hasIv)
+        {
+            throw new IOException("The vault key or IV is missing. Restore the original key files before retrying.");
+        }
+
+        var key = await DpapiHelper.UnprotectFromFileAsync(keyPath);
+        var iv = await DpapiHelper.UnprotectFromFileAsync(ivPath);
+        if (key.Length != 32 || iv.Length != 16)
+            throw new InvalidDataException("The vault key or IV has an invalid length.");
+
+        _masterKey = key;
+        _masterIV = iv;
     }
 
-    /// <summary>
-    /// Locks a folder by encrypting all files and applying ACL restrictions.
-    /// </summary>
-    /// <param name="folderPath">Path to the folder to lock.</param>
-    /// <returns>Information about the locked folder.</returns>
-    public async Task<GameFolderInfo> LockFolderAsync(string folderPath)
+    public async Task<GameFolderInfo> LockFolderAsync(
+        string folderPath,
+        LockMode mode = LockMode.AclOnly,
+        FolderEncryptionSettings? vaultSettings = null)
     {
-        var info = new GameFolderInfo
-        {
-            Path = folderPath,
-            State = FolderState.Unknown
-        };
+        var info = new GameFolderInfo { Path = folderPath, State = FolderState.Unknown };
+        FolderStateRecord? record = null;
+        FileStream? operation = null;
 
         try
         {
-            if (!Directory.Exists(folderPath))
+            var path = info.Path = PathGuard.Validate(folderPath);
+            operation = _stateStore.BeginOperation(path);
+            record = _stateStore.TryLoad(path);
+            if (record is { TestLock: true })
             {
-                info.LastError = "Folder does not exist.";
-                return info;
+                RestorePermissions(record);
+                _stateStore.Delete(path);
+                record = null;
             }
 
-            // Check if already locked
-            if (HasLockMarker(folderPath))
+            if (record is { AclApplied: true } && record.Acl is not { IsRestorable: true })
+                throw new InvalidDataException("The original permissions are missing from the lock journal.");
+
+            if (record is null)
             {
-                info.State = FolderState.Locked;
-                return info;
+                if (HasLockMarker(path))
+                    throw new InvalidOperationException("Restore the legacy GameLocker lock before starting a new lock.");
+
+                record = new FolderStateRecord { FolderPath = path, LockedAtUtc = DateTime.UtcNow };
             }
 
-            // Create a lock marker file first
-            await CreateLockMarkerAsync(folderPath);
+            record.Acl ??= FolderAclManager.Capture(path);
+            record.Mode = record.HasOutstandingChanges && record.LockInProgress ? record.Mode : mode;
+            record.LockInProgress = true;
+            _stateStore.Save(record);
 
-            // Encrypt all files in the folder recursively
-            await EncryptFolderContentsAsync(folderPath);
+            if (!FolderAclManager.IsLocked(path))
+                FolderAclManager.ApplyLock(path);
 
-            // Apply ACL to deny access
-            AclHelper.DenyAccess(folderPath);
+            record.AclApplied = true;
+            if (record.Mode == LockMode.AclAndVault && vaultSettings is not null)
+                await EncryptSelectedFilesAsync(record, vaultSettings);
 
-            info.State = FolderState.Locked;
-            info.LastStateChange = DateTime.Now;
+            record.LockInProgress = false;
+            record.LastError = null;
+            _stateStore.Save(record);
+            SetFinished(info, FolderState.Locked);
         }
         catch (Exception ex)
         {
             info.LastError = ex.Message;
+            RecordError(record, ex.Message);
+        }
+        finally
+        {
+            operation?.Dispose();
         }
 
         return info;
     }
 
-    /// <summary>
-    /// Unlocks a folder by decrypting all files and removing ACL restrictions.
-    /// </summary>
-    /// <param name="folderPath">Path to the folder to unlock.</param>
-    /// <returns>Information about the unlocked folder.</returns>
-    public async Task<GameFolderInfo> UnlockFolderAsync(string folderPath)
+    /// <summary>Runs a temporary ACL test while holding the same journal as scheduled operations.</summary>
+    public void TestLockFolder(string folderPath, Action onLocked)
     {
-        var info = new GameFolderInfo
+        ArgumentNullException.ThrowIfNull(onLocked);
+        var path = PathGuard.Validate(folderPath);
+        using var operation = _stateStore.BeginOperation(path);
+
+        if (_stateStore.TryLoad(path) is { HasOutstandingChanges: true } || HasLockMarker(path))
         {
-            Path = folderPath,
-            State = FolderState.Unknown
+            throw new InvalidOperationException("This folder already has an outstanding GameLocker lock.");
+        }
+
+        var record = new FolderStateRecord
+        {
+            FolderPath = path,
+            Acl = FolderAclManager.Capture(path),
+            LockedAtUtc = DateTime.UtcNow,
+            LockInProgress = true,
+            TestLock = true,
         };
+        _stateStore.Save(record);
 
         try
         {
-            if (!Directory.Exists(folderPath))
-            {
-                info.LastError = "Folder does not exist.";
-                return info;
-            }
-
-            // ALWAYS remove ACL restrictions first, regardless of lock marker
-            // This ensures cleanup even if the lock marker is missing
+            FolderAclManager.ApplyLock(path);
+            onLocked();
+        }
+        finally
+        {
             try
             {
-                AclHelper.AllowAccess(folderPath);
+                RestorePermissions(record);
+                _stateStore.Delete(path);
             }
-            catch (Exception aclEx)
+            catch (Exception ex)
             {
-                // Log but continue - folder might already be accessible
-                Console.WriteLine($"ACL cleanup warning: {aclEx.Message}");
+                RecordError(record, ex.Message);
+                throw;
+            }
+        }
+    }
+
+    public async Task<GameFolderInfo> UnlockFolderAsync(string folderPath)
+    {
+        var info = new GameFolderInfo { Path = folderPath };
+
+        try
+        {
+            var path = info.Path = PathGuard.Validate(folderPath);
+            using var operation = _stateStore.BeginOperation(path);
+            var record = _stateStore.TryLoad(path);
+            if (record is null)
+            {
+                UnlockLegacyFolder(path);
+                SetFinished(info, FolderState.Unlocked);
+                return info;
             }
 
-            // Check if there's anything to decrypt
-            var hasMarker = HasLockMarker(folderPath);
+            var failures = new List<string>();
+            try
+            {
+                if (record.VaultFiles.Count > 0)
+                    await RestoreVaultFilesAsync(record, failures);
+            }
+            catch (Exception ex)
+            {
+                failures.Add(ex.Message);
+            }
 
-            // Decrypt all files in the folder recursively
-            await DecryptFolderContentsAsync(folderPath);
+            try
+            {
+                RestorePermissions(record);
+            }
+            catch (Exception ex)
+            {
+                failures.Add($"Could not restore permissions: {ex.Message}");
+            }
 
-            // Remove lock marker
-            await RemoveLockMarkerAsync(folderPath);
-
-            info.State = FolderState.Unlocked;
-            info.LastStateChange = DateTime.Now;
+            if (failures.Count == 0 && !record.HasOutstandingChanges)
+            {
+                _stateStore.Delete(path);
+                SetFinished(info, FolderState.Unlocked);
+            }
+            else
+            {
+                info.LastError = record.LastError = string.Join(" ", failures);
+                _stateStore.Save(record);
+            }
         }
         catch (Exception ex)
         {
@@ -150,422 +227,333 @@ public class FolderLocker
         return info;
     }
 
-    /// <summary>
-    /// Gets the current state of a folder.
-    /// </summary>
-    /// <param name="folderPath">Path to the folder.</param>
-    /// <returns>The folder's current state.</returns>
+    private static void RestorePermissions(FolderStateRecord record)
+    {
+        if (record.Acl is null && !record.AclApplied)
+            return;
+
+        if (record.Acl is not { IsRestorable: true } snapshot)
+            throw new InvalidDataException("The original permissions are missing from the lock journal.");
+
+        if (!FolderAclManager.MatchesSnapshot(record.FolderPath, snapshot))
+            FolderAclManager.Restore(record.FolderPath, snapshot);
+
+        if (!FolderAclManager.MatchesSnapshot(record.FolderPath, snapshot))
+            throw new IOException("The folder permissions do not match the original journal snapshot.");
+
+        record.Acl = null;
+        record.AclApplied = false;
+    }
+
     public FolderState GetFolderState(string folderPath)
     {
-        if (!Directory.Exists(folderPath))
+        try
+        {
+            if (!PathGuard.TryValidate(folderPath, out var guard))
+                return FolderState.Unknown;
+
+            var path = guard.Path;
+            var record = _stateStore.TryLoad(path);
+            if (record is { HasOutstandingChanges: true })
+            {
+                return !record.LockInProgress && !record.TestLock &&
+                    record.AclApplied && FolderAclManager.IsLocked(path)
+                    ? FolderState.Locked
+                    : FolderState.Unknown;
+            }
+
+            if (HasLockMarker(path))
+                return AclHelper.IsAccessDenied(path) ? FolderState.Locked : FolderState.Unknown;
+
+            return FolderState.Unlocked;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "Could not inspect lock state for {Folder}", folderPath);
             return FolderState.Unknown;
-
-        return HasLockMarker(folderPath) ? FolderState.Locked : FolderState.Unlocked;
+        }
     }
 
-    /// <summary>
-    /// Checks if a lock marker file exists in the folder.
-    /// </summary>
-    public bool HasLockMarker(string folderPath)
+    public IReadOnlyList<FolderStateRecord> GetManagedFolders() =>
+        _stateStore.LoadAll(error => _logger.LogWarning("{JournalError}", error))
+            .Where(record => record.HasOutstandingChanges)
+            .OrderByDescending(record => record.LockedAtUtc)
+            .ToList();
+
+    private void RecordError(FolderStateRecord? record, string message)
     {
-        var markerPath = Path.Combine(folderPath, ".gamelocker");
-        return File.Exists(markerPath);
+        if (record is null)
+            return;
+
+        record.LastError = message;
+        try
+        {
+            _stateStore.Save(record);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Could not update the lock journal for {Folder}", record.FolderPath);
+        }
     }
 
-    /// <summary>
-    /// Decrypts a single encrypted file (public wrapper for UI use).
-    /// </summary>
-    /// <param name="encryptedPath">Path to the .enc file to decrypt.</param>
+    public bool HasLockMarker(string folderPath) =>
+        File.Exists(Path.Combine(folderPath, ".gamelocker"));
+
+    private void UnlockLegacyFolder(string folderPath)
+    {
+        if (!HasLockMarker(folderPath))
+            return;
+
+        var marker = Path.Combine(folderPath, ".gamelocker");
+        PathGuard.EnsureNoReparsePoints(marker);
+        AclHelper.RemoveLegacyGameLockerDenies(folderPath);
+
+        if (Directory.EnumerateFiles(folderPath, "*.enc", PathGuard.FileEnumerationOptions(recursive: true)).Any())
+        {
+            throw new InvalidOperationException(
+                "The folder has legacy .enc files with no vault journal. Use GameLocker.Recovery restore-file to recover each known GameLocker file.");
+        }
+
+        File.Delete(marker);
+    }
+
+    /// <summary>Recovers an explicitly selected legacy file and keeps its unauthenticated source.</summary>
     public async Task DecryptSingleFileAsync(string encryptedPath)
     {
-        if (_masterKey == null || _masterIV == null)
-            await InitializeAsync();
-            
-        await DecryptFileAsync(encryptedPath);
+        if (!encryptedPath.EndsWith(".enc", StringComparison.OrdinalIgnoreCase))
+            throw new ArgumentException("Select a .enc file.", nameof(encryptedPath));
+
+        var path = Path.GetFullPath(encryptedPath);
+        PathGuard.Validate(Path.GetDirectoryName(path));
+        await LoadVaultKeysAsync(create: false);
+        RestoreFile(path, null);
     }
 
-    private async Task CreateLockMarkerAsync(string folderPath)
+    public Task<GameFolderInfo> LockFolderWithCustomExtensionsAsync(
+        string folderPath, FolderEncryptionSettings folderSettings) =>
+        LockFolderAsync(folderPath, LockMode.AclAndVault, folderSettings);
+
+    /// <summary>Encrypts explicit selections and journals them without applying an ACL lock.</summary>
+    public async Task<List<string>> EncryptFolderWithCustomExtensionsAsync(
+        string folderPath, FolderEncryptionSettings folderSettings)
     {
-        if (_masterKey == null || _masterIV == null)
-            await InitializeAsync();
-
-        var markerPath = Path.Combine(folderPath, ".gamelocker");
-        var timestamp = DateTime.Now.ToString("O");
-        var markerData = System.Text.Encoding.UTF8.GetBytes($"GameLocker|Locked|{timestamp}");
-        var encryptedMarker = AesEncryptionHelper.Encrypt(markerData, _masterKey!, _masterIV!);
-        await File.WriteAllBytesAsync(markerPath, encryptedMarker);
-
-        // Set the marker file as hidden
-        File.SetAttributes(markerPath, FileAttributes.Hidden);
-    }
-
-    private Task RemoveLockMarkerAsync(string folderPath)
-    {
-        var markerPath = Path.Combine(folderPath, ".gamelocker");
-        if (File.Exists(markerPath))
+        ArgumentNullException.ThrowIfNull(folderSettings);
+        var path = PathGuard.Validate(folderPath);
+        using var operation = _stateStore.BeginOperation(path);
+        var record = _stateStore.TryLoad(path) ?? new FolderStateRecord
         {
-            File.Delete(markerPath);
+            FolderPath = path,
+            Mode = LockMode.AclAndVault,
+            LockedAtUtc = DateTime.UtcNow,
+        };
+
+        try
+        {
+            await EncryptSelectedFilesAsync(record, folderSettings);
         }
-        return Task.CompletedTask;
+        catch (Exception ex)
+        {
+            RecordError(record, ex.Message);
+        }
+
+        return record.VaultFiles.ToList();
     }
 
-    /// <summary>
-    /// Encrypts all files in a folder recursively.
-    /// </summary>
-    private async Task EncryptFolderContentsAsync(string folderPath)
+    private async Task EncryptSelectedFilesAsync(FolderStateRecord record, FolderEncryptionSettings settings)
     {
-        if (_masterKey == null || _masterIV == null)
-            await InitializeAsync();
-
-        // Get all files recursively, excluding the lock marker and already-encrypted files.
-        var candidates = Directory.GetFiles(folderPath, "*", SearchOption.AllDirectories)
-            .Where(f => !IsGameLockerArtefact(f))
+        var folderPath = record.FolderPath;
+        var files = Directory.EnumerateFiles(folderPath, "*", PathGuard.FileEnumerationOptions(recursive: true))
+            .Where(file =>
+            {
+                var name = Path.GetFileName(file);
+                return !string.Equals(name, ".gamelocker", StringComparison.OrdinalIgnoreCase) &&
+                    !file.EndsWith(".enc", StringComparison.OrdinalIgnoreCase) && settings.ShouldEncryptFile(name);
+            })
             .ToArray();
 
-        // The hard denylist applies on this path too.
-        //
-        // This method is what the service actually runs - GameLockerService.LockAllFoldersAsync
-        // calls LockFolderAsync, never LockFolderWithCustomExtensionsAsync, so the per-folder
-        // extension selection made in the UI has never been consulted. Until that wiring is fixed
-        // (Phase 1-4 of REMEDIATION-PLAN.md) this filter is the only thing standing between a
-        // scheduled lock and an encrypted .exe, .dll or asset archive.
-        // See ARCHITECTURE-REVIEW.md findings [D-1] and [G-7].
-        var files = candidates.Where(f => !FileExtensionScanner.IsNeverEncryptable(f)).ToArray();
-        var protectedCount = candidates.Length - files.Length;
+        if (files.Length == 0)
+            return;
 
-        if (protectedCount > 0)
-        {
-            Console.WriteLine(
-                $"Skipping {protectedCount} file(s) whose extension may never be encrypted " +
-                "(executables, libraries and asset archives).");
-        }
-
+        await LoadVaultKeysAsync(create: record.VaultFiles.Count == 0);
+        var failures = new List<string>();
         foreach (var filePath in files)
         {
             try
             {
-                await EncryptFileAsync(filePath);
+                EncryptFile(record, filePath);
             }
             catch (Exception ex)
             {
-                // Log but continue with other files
-                Console.WriteLine($"Failed to encrypt {filePath}: {ex.Message}");
+                _logger.LogError(ex, "Could not encrypt {File}", filePath);
+                failures.Add($"{Path.GetRelativePath(folderPath, filePath)}: {ex.Message}");
             }
+        }
+
+        if (failures.Count > 0)
+            throw new IOException(string.Join(" ", failures));
+    }
+
+    private void EncryptFile(FolderStateRecord record, string originalPath)
+    {
+        var encryptedPath = originalPath + ".enc";
+        var relativePath = Path.GetRelativePath(record.FolderPath, originalPath);
+        PathGuard.EnsureNoReparsePoints(originalPath);
+        PathGuard.EnsureNoReparsePoints(encryptedPath);
+
+        using var original = new FileStream(originalPath, FileMode.Open, FileAccess.Read, FileShare.Read | FileShare.Delete);
+        if (File.Exists(encryptedPath))
+        {
+            if (record.VaultCiphertextHashes.TryGetValue(relativePath, out var expectedHash) &&
+                CiphertextMatchesOriginal(encryptedPath, expectedHash, original))
+            {
+                File.Delete(originalPath);
+                return;
+            }
+
+            throw new IOException("A conflicting .enc file already exists. Both copies were kept.");
+        }
+
+        var tempPath = encryptedPath + $".{Guid.NewGuid():N}.gamelocker-tmp";
+        try
+        {
+            string hash;
+            using (var destination = new FileStream(tempPath, FileMode.CreateNew, FileAccess.ReadWrite, FileShare.None))
+            {
+                AesEncryptionHelper.EncryptStream(original, destination, _masterKey!, _masterIV!, leaveOpen: true);
+                destination.Flush(flushToDisk: true);
+                destination.Position = 0;
+                hash = Convert.ToHexString(SHA256.HashData(destination));
+            }
+
+            if (!record.VaultFiles.Contains(relativePath, StringComparer.OrdinalIgnoreCase))
+                record.VaultFiles.Add(relativePath);
+
+            record.VaultCiphertextHashes[relativePath] = hash;
+            _stateStore.Save(record);
+
+            File.Move(tempPath, encryptedPath, overwrite: false);
+            File.Delete(originalPath);
+        }
+        finally
+        {
+            File.Delete(tempPath);
         }
     }
 
-    /// <summary>
-    /// Determines whether a path is a file GameLocker itself created and must not re-process.
-    /// </summary>
-    /// <remarks>
-    /// The previous filter compared the whole path with the culture-sensitive
-    /// <c>string.EndsWith</c> overload, so a file named <c>mysave.gamelocker</c> anywhere in the
-    /// tree was silently exempt. See ARCHITECTURE-REVIEW.md finding [D-14].
-    /// </remarks>
-    private static bool IsGameLockerArtefact(string filePath)
+    private bool CiphertextMatchesOriginal(string encryptedPath, string expectedHash, Stream original)
     {
-        var name = Path.GetFileName(filePath);
-
-        return string.Equals(name, ".gamelocker", StringComparison.OrdinalIgnoreCase)
-            || Path.GetExtension(name).Equals(".enc", StringComparison.OrdinalIgnoreCase);
+        using var ciphertext = File.OpenRead(encryptedPath);
+        VerifyCiphertext(ciphertext, expectedHash);
+        using var plainHash = SHA256.Create();
+        using var hashStream = new CryptoStream(Stream.Null, plainHash, CryptoStreamMode.Write);
+        AesEncryptionHelper.DecryptStream(ciphertext, hashStream, _masterKey!, _masterIV!, leaveOpen: true);
+        hashStream.FlushFinalBlock();
+        return CryptographicOperations.FixedTimeEquals(SHA256.HashData(original), plainHash.Hash!);
     }
 
-    /// <summary>
-    /// Decrypts all encrypted files in a folder recursively.
-    /// </summary>
-    private async Task DecryptFolderContentsAsync(string folderPath)
+    private async Task RestoreVaultFilesAsync(FolderStateRecord record, List<string> failures)
     {
-        if (_masterKey == null || _masterIV == null)
-            await InitializeAsync();
-
-        // Get all encrypted files recursively
-        var encryptedFiles = Directory.GetFiles(folderPath, "*.enc", SearchOption.AllDirectories);
-
-        foreach (var encryptedPath in encryptedFiles)
+        foreach (var relativePath in record.VaultFiles.ToArray())
         {
             try
             {
-                await DecryptFileAsync(encryptedPath);
+                var originalPath = ResolveVaultPath(record.FolderPath, relativePath);
+                var encryptedPath = originalPath + ".enc";
+                PathGuard.EnsureNoReparsePoints(encryptedPath);
+
+                if (File.Exists(encryptedPath))
+                {
+                    await LoadVaultKeysAsync(create: false);
+                    record.VaultCiphertextHashes.TryGetValue(relativePath, out var expectedHash);
+                    RestoreFile(encryptedPath, expectedHash);
+                }
+                else if (!File.Exists(originalPath))
+                {
+                    throw new FileNotFoundException("Both the original and encrypted copy are missing.");
+                }
+
+                record.VaultFiles.Remove(relativePath);
+                record.VaultCiphertextHashes.Remove(relativePath);
             }
             catch (Exception ex)
             {
-                // Log but continue with other files
-                Console.WriteLine($"Failed to decrypt {encryptedPath}: {ex.Message}");
+                failures.Add($"Could not restore '{relativePath}': {ex.Message}");
             }
         }
     }
 
-    /// <summary>
-    /// Encrypts a single file by replacing it with an encrypted version.
-    /// Uses streaming for large files to handle files over 2GB.
-    /// </summary>
-    private async Task EncryptFileAsync(string filePath)
+    private static string ResolveVaultPath(string folderPath, string relativePath)
     {
-        if (_masterKey == null || _masterIV == null)
-            throw new InvalidOperationException("Encryption keys not initialized");
-
-        var encryptedPath = filePath + ".enc";
-        var maxRetries = 3;
-        var retryDelay = TimeSpan.FromMilliseconds(500);
-
-        for (int attempt = 1; attempt <= maxRetries; attempt++)
+        if (string.IsNullOrWhiteSpace(relativePath) || Path.IsPathRooted(relativePath) ||
+            relativePath.Contains(':'))
         {
-            try
-            {
-                // Check if file is already encrypted
-                if (filePath.EndsWith(".enc", StringComparison.OrdinalIgnoreCase))
-                    return;
-
-                // An existing .enc alongside an existing original means a previous run was
-                // interrupted between writing the ciphertext and deleting the plaintext. The
-                // ciphertext may be truncated, and there is no header or MAC to tell us whether it
-                // is complete, so it cannot be trusted.
-                //
-                // This branch previously deleted the original on the assumption the .enc was valid,
-                // which turned every interrupted lock into permanent, silent data loss on the next
-                // run. See ARCHITECTURE-REVIEW.md finding [D-2]. Refuse and surface it instead.
-                if (File.Exists(encryptedPath))
-                {
-                    throw new InvalidOperationException(
-                        $"Refusing to encrypt '{filePath}': an unverified '{Path.GetFileName(encryptedPath)}' " +
-                        "already exists, which indicates an interrupted previous run. " +
-                        "Resolve this file manually before locking again - the original has NOT been deleted.");
-                }
-
-                // Wait for any file handles to be released
-                if (attempt > 1)
-                {
-                    await Task.Delay(retryDelay * attempt);
-                    
-                    // Try to force close any handles (Windows specific)
-                    GC.Collect();
-                    GC.WaitForPendingFinalizers();
-                }
-
-                // Use exclusive access for encryption
-                using (var sourceStream = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.None))
-                using (var destStream = new FileStream(encryptedPath, FileMode.Create, FileAccess.Write, FileShare.None))
-                {
-                    AesEncryptionHelper.EncryptStream(sourceStream, destStream, _masterKey, _masterIV);
-                }
-                
-                // Delete original file after successful encryption
-                File.Delete(filePath);
-                
-                // Set encrypted file as hidden
-                File.SetAttributes(encryptedPath, FileAttributes.Hidden);
-                
-                return; // Success, exit retry loop
-            }
-            catch (IOException ioEx) when (attempt < maxRetries)
-            {
-                // Clean up partial encrypted file on failure
-                if (File.Exists(encryptedPath))
-                {
-                    try { File.Delete(encryptedPath); } catch { }
-                }
-
-                // If it's the last attempt, throw the exception
-                if (attempt == maxRetries)
-                    throw new Exception($"Failed to encrypt {filePath} after {maxRetries} attempts: {ioEx.Message}", ioEx);
-                
-                // Continue to next retry
-            }
-            catch (Exception ex)
-            {
-                // Clean up partial encrypted file on failure
-                if (File.Exists(encryptedPath))
-                {
-                    try { File.Delete(encryptedPath); } catch { }
-                }
-                throw new Exception($"Failed to encrypt {filePath}: {ex.Message}", ex);
-            }
+            throw new InvalidDataException("The vault journal entry is not a relative file path.");
         }
+
+        var path = PathGuard.Normalize(Path.Combine(folderPath, relativePath));
+        if (!PathGuard.IsAtOrUnder(path, folderPath) || path.Equals(folderPath, StringComparison.OrdinalIgnoreCase))
+            throw new InvalidDataException("The vault journal entry is outside the selected folder.");
+
+        PathGuard.EnsureNoReparsePoints(path);
+        return path;
     }
 
-    /// <summary>
-    /// Decrypts a single .enc file by replacing it with the decrypted version.
-    /// Uses streaming for large files to handle files over 2GB.
-    /// </summary>
-    private async Task DecryptFileAsync(string encryptedPath)
+    private void RestoreFile(string encryptedPath, string? expectedHash)
     {
-        if (_masterKey == null || _masterIV == null)
-            throw new InvalidOperationException("Encryption keys not initialized");
-
-        // Determine original file path (remove .enc extension)
-        var originalPath = encryptedPath.Substring(0, encryptedPath.Length - 4);
-        var maxRetries = 3;
-        var retryDelay = TimeSpan.FromMilliseconds(500);
-
-        for (int attempt = 1; attempt <= maxRetries; attempt++)
-        {
-            try
-            {
-                // Check if original file already exists
-                if (File.Exists(originalPath) && !File.Exists(encryptedPath))
-                    return; // Already decrypted
-
-                // Wait for any file handles to be released
-                if (attempt > 1)
-                {
-                    await Task.Delay(retryDelay * attempt);
-                    
-                    // Try to force close any handles
-                    GC.Collect();
-                    GC.WaitForPendingFinalizers();
-                }
-
-                // Use exclusive access for decryption
-                using (var sourceStream = new FileStream(encryptedPath, FileMode.Open, FileAccess.Read, FileShare.None))
-                using (var destStream = new FileStream(originalPath, FileMode.Create, FileAccess.Write, FileShare.None))
-                {
-                    AesEncryptionHelper.DecryptStream(sourceStream, destStream, _masterKey, _masterIV);
-                }
-                
-                // Delete encrypted file after successful decryption
-                File.Delete(encryptedPath);
-                
-                return; // Success, exit retry loop
-            }
-            catch (IOException ioEx) when (attempt < maxRetries)
-            {
-                // Clean up partial decrypted file on failure
-                if (File.Exists(originalPath))
-                {
-                    try { File.Delete(originalPath); } catch { }
-                }
-
-                // If it's the last attempt, throw the exception
-                if (attempt == maxRetries)
-                    throw new Exception($"Failed to decrypt {encryptedPath} after {maxRetries} attempts: {ioEx.Message}", ioEx);
-                
-                // Continue to next retry
-            }
-            catch (Exception ex)
-            {
-                // Clean up partial decrypted file on failure
-                if (File.Exists(originalPath))
-                {
-                    try { File.Delete(originalPath); } catch { }
-                }
-                throw new Exception($"Failed to decrypt {encryptedPath}: {ex.Message}", ex);
-            }
-        }
-    }
-
-    /// <summary>
-    /// Locks a folder using per-folder extension settings with dynamic file type discovery.
-    /// </summary>
-    /// <param name="folderPath">Path to the folder to lock.</param>
-    /// <param name="folderSettings">Per-folder encryption settings with user-selected extensions.</param>
-    /// <returns>Information about the locked folder.</returns>
-    public async Task<GameFolderInfo> LockFolderWithCustomExtensionsAsync(string folderPath, FolderEncryptionSettings folderSettings)
-    {
-        var info = new GameFolderInfo
-        {
-            Path = folderPath,
-            State = FolderState.Unknown
-        };
+        var originalPath = encryptedPath[..^4];
+        PathGuard.EnsureNoReparsePoints(originalPath);
+        PathGuard.EnsureNoReparsePoints(encryptedPath);
+        var tempPath = originalPath + $".{Guid.NewGuid():N}.gamelocker-tmp";
 
         try
         {
-            if (!Directory.Exists(folderPath))
+            using var source = new FileStream(encryptedPath, FileMode.Open, FileAccess.Read, FileShare.Read | FileShare.Delete);
+            if (expectedHash is not null)
+                VerifyCiphertext(source, expectedHash);
+
+            using var existing = File.Exists(originalPath) ? File.OpenRead(originalPath) : null;
+            using (var destination = new FileStream(tempPath, FileMode.CreateNew, FileAccess.ReadWrite, FileShare.None))
             {
-                info.LastError = "Folder does not exist.";
-                return info;
+                AesEncryptionHelper.DecryptStream(source, destination, _masterKey!, _masterIV!, leaveOpen: true);
+                destination.Flush(flushToDisk: true);
+
+                if (existing is not null)
+                {
+                    if (expectedHash is null)
+                        throw new IOException("An original file already exists. Both copies were kept.");
+
+                    destination.Position = 0;
+                    if (!CryptographicOperations.FixedTimeEquals(SHA256.HashData(existing), SHA256.HashData(destination)))
+                        throw new IOException("The restored data differs from an existing original. Both copies were kept.");
+                }
             }
 
-            // Check if already locked
-            if (HasLockMarker(folderPath))
-            {
-                info.State = FolderState.Locked;
-                return info;
-            }
+            if (existing is null)
+                File.Move(tempPath, originalPath, overwrite: false);
 
-            // Create a lock marker file first
-            await CreateLockMarkerAsync(folderPath);
-
-            // Use per-folder extension settings for precise encryption control
-            await EncryptFolderWithCustomExtensionsAsync(folderPath, folderSettings);
-
-            // Apply ACL to deny access
-            AclHelper.DenyAccess(folderPath);
-
-            info.State = FolderState.Locked;
-            info.LastStateChange = DateTime.Now;
+            // Legacy ciphertext lacks an integrity digest, so it remains available for recovery.
+            if (expectedHash is not null)
+                File.Delete(encryptedPath);
         }
-        catch (Exception ex)
+        finally
         {
-            info.LastError = ex.Message;
+            File.Delete(tempPath);
         }
-
-        return info;
     }
 
-    /// <summary>
-    /// Encrypts files in a folder using per-folder custom extension selection.
-    /// Only encrypts the specific file extensions the user selected for this folder.
-    /// </summary>
-    /// <param name="folderPath">Path to the folder to encrypt</param>
-    /// <param name="folderSettings">Per-folder settings with user-selected extensions</param>
-    public async Task EncryptFolderWithCustomExtensionsAsync(string folderPath, FolderEncryptionSettings folderSettings)
+    private static void VerifyCiphertext(Stream source, string expectedHash)
     {
-        if (_masterKey == null || _masterIV == null)
-            await InitializeAsync();
+        var actualHash = Convert.ToHexString(SHA256.HashData(source));
+        if (!string.Equals(actualHash, expectedHash, StringComparison.OrdinalIgnoreCase))
+            throw new InvalidDataException("The encrypted copy does not match its journal integrity digest.");
 
-        // Get all files recursively, excluding the lock marker and already encrypted files
-        var files = Directory.GetFiles(folderPath, "*", SearchOption.AllDirectories)
-            .Where(f => !IsGameLockerArtefact(f))
-            .ToArray();
+        source.Position = 0;
+    }
 
-        // ShouldEncryptFile already enforces the hard denylist.
-        var filesToEncrypt = files.Where(f => folderSettings.ShouldEncryptFile(Path.GetFileName(f))).ToArray();
-        var skippedFiles = files.Except(filesToEncrypt).ToArray();
-
-        Console.WriteLine($"Per-Folder Encryption Summary for {Path.GetFileName(folderPath)}:");
-        Console.WriteLine($"- Total files found: {files.Length}");
-        Console.WriteLine($"- Files to encrypt: {filesToEncrypt.Length}");
-        Console.WriteLine($"- Files to skip: {skippedFiles.Length}");
-        Console.WriteLine($"- Configuration: {folderSettings.GetEncryptionSummary()}");
-
-        // Show which extensions are being encrypted
-        if (folderSettings.UseCustomSelection && folderSettings.SelectedExtensions.Count > 0)
-        {
-            Console.WriteLine($"- Selected extensions: {string.Join(", ", folderSettings.SelectedExtensions)}");
-        }
-
-        foreach (var filePath in filesToEncrypt)
-        {
-            try
-            {
-                await EncryptFileAsync(filePath);
-            }
-            catch (Exception ex)
-            {
-                // Log but continue with other files
-                Console.WriteLine($"Failed to encrypt {filePath}: {ex.Message}");
-            }
-        }
-
-        // Log some examples of files that were skipped
-        if (skippedFiles.Length > 0)
-        {
-            Console.WriteLine($"\nSkipped files (user did not select these extensions):");
-            var skippedByExtension = skippedFiles
-                .GroupBy(f => Path.GetExtension(f).ToLowerInvariant())
-                .OrderByDescending(g => g.Count())
-                .Take(5);
-
-            foreach (var group in skippedByExtension)
-            {
-                var examples = string.Join(", ", group.Take(2).Select(Path.GetFileName));
-                Console.WriteLine($"- {group.Key} ({group.Count()} files): {examples}");
-            }
-
-            if (skippedByExtension.Count() > 5)
-            {
-                Console.WriteLine($"- ... and more extension types");
-            }
-        }
+    private static void SetFinished(GameFolderInfo info, FolderState state)
+    {
+        info.State = state;
+        info.LastStateChange = DateTime.Now;
     }
 }
+

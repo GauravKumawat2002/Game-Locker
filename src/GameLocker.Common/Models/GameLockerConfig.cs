@@ -32,6 +32,10 @@ public class GameLockerConfig
     [JsonPropertyName("gameFolderPaths")]
     public List<string> GameFolderPaths { get; set; } = new();
 
+    /// <summary>Removed folders the service should restore, including legacy locks without a journal.</summary>
+    [JsonPropertyName("foldersPendingRestore")]
+    public List<string> FoldersPendingRestore { get; set; } = new();
+
     /// <summary>
     /// Polling interval in minutes for the service to check schedule.
     /// </summary>
@@ -43,6 +47,18 @@ public class GameLockerConfig
     /// </summary>
     [JsonPropertyName("notificationsEnabled")]
     public bool NotificationsEnabled { get; set; } = true;
+
+    /// <summary>
+    /// How folders are locked.
+    /// </summary>
+    /// <remarks>
+    /// Defaults to <see cref="Models.LockMode.AclOnly"/>, which denies access through NTFS
+    /// permissions without reading or writing a single file. Existing configurations that predate
+    /// this setting deserialise to the same default, so upgrading stops the bulk encryption that
+    /// previously ran on every scheduled lock.
+    /// </remarks>
+    [JsonPropertyName("lockMode")]
+    public LockMode LockMode { get; set; } = LockMode.AclOnly;
 
     /// <summary>
     /// Selective encryption settings - only encrypt specific file types instead of everything

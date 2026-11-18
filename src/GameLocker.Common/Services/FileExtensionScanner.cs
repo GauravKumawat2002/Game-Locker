@@ -2,6 +2,9 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using GameLocker.Common.Security;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace GameLocker.Common.Services;
 
@@ -11,6 +14,17 @@ namespace GameLocker.Common.Services;
 /// </summary>
 public class FileExtensionScanner
 {
+    private readonly ILogger _logger;
+
+    /// <summary>
+    /// Creates a scanner.
+    /// </summary>
+    /// <param name="logger">Where to report per-file problems. Defaults to discarding them.</param>
+    public FileExtensionScanner(ILogger? logger = null)
+    {
+        _logger = logger ?? NullLogger.Instance;
+    }
+
     /// <summary>
     /// Extensions that must never be encrypted, whatever the user selects.
     /// </summary>
@@ -75,8 +89,8 @@ public class FileExtensionScanner
         
         try
         {
-            var searchOption = recursive ? SearchOption.AllDirectories : SearchOption.TopDirectoryOnly;
-            var files = Directory.GetFiles(folderPath, "*.*", searchOption);
+            PathGuard.EnsureNoReparsePoints(folderPath);
+            var files = Directory.GetFiles(folderPath, "*", PathGuard.FileEnumerationOptions(recursive));
             
             result.TotalFilesFound = files.Length;
             
@@ -86,6 +100,7 @@ public class FileExtensionScanner
                 {
                     var extension = Path.GetExtension(file).ToLowerInvariant();
                     var fileName = Path.GetFileName(file);
+                    PathGuard.EnsureNoReparsePoints(file);
                     var fileInfo = new FileInfo(file);
                     
                     // Skip files without extensions or just dots
@@ -120,7 +135,7 @@ public class FileExtensionScanner
                 catch (Exception ex)
                 {
                     // Skip individual file errors but continue scanning
-                    Console.WriteLine($"Warning: Could not process file {file}: {ex.Message}");
+                    _logger.LogDebug(ex, "Could not inspect {File} while scanning: {Message}", file, ex.Message);
                 }
             }
             
@@ -206,7 +221,8 @@ public class FileExtensionScanner
         
         try
         {
-            var files = Directory.GetFiles(folderPath, "*.*", SearchOption.TopDirectoryOnly)
+            PathGuard.EnsureNoReparsePoints(folderPath);
+            var files = Directory.EnumerateFiles(folderPath, "*", PathGuard.FileEnumerationOptions(recursive: false))
                 .Take(maxFiles);
                 
             foreach (var file in files)

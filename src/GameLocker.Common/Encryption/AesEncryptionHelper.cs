@@ -147,7 +147,7 @@ public static class AesEncryptionHelper
     /// <param name="output">Destination stream for encrypted data.</param>
     /// <param name="key">The AES-256 key (32 bytes).</param>
     /// <param name="iv">The initialization vector (16 bytes).</param>
-    public static void EncryptStream(Stream input, Stream output, byte[] key, byte[] iv)
+    public static void EncryptStream(Stream input, Stream output, byte[] key, byte[] iv, bool leaveOpen = false)
     {
         ArgumentNullException.ThrowIfNull(input);
         ArgumentNullException.ThrowIfNull(output);
@@ -168,7 +168,7 @@ public static class AesEncryptionHelper
         aes.IV = iv;
 
         using var encryptor = aes.CreateEncryptor();
-        using var cs = new CryptoStream(output, encryptor, CryptoStreamMode.Write);
+        using var cs = new CryptoStream(output, encryptor, CryptoStreamMode.Write, leaveOpen);
         
         const int bufferSize = 64 * 1024; // 64KB buffer
         input.CopyTo(cs, bufferSize);
@@ -183,7 +183,7 @@ public static class AesEncryptionHelper
     /// <param name="output">Destination stream for decrypted data.</param>
     /// <param name="key">The AES-256 key (32 bytes).</param>
     /// <param name="iv">The initialization vector (16 bytes).</param>
-    public static void DecryptStream(Stream input, Stream output, byte[] key, byte[] iv)
+    public static void DecryptStream(Stream input, Stream output, byte[] key, byte[] iv, bool leaveOpen = false)
     {
         ArgumentNullException.ThrowIfNull(input);
         ArgumentNullException.ThrowIfNull(output);
@@ -204,7 +204,7 @@ public static class AesEncryptionHelper
         aes.IV = iv;
 
         using var decryptor = aes.CreateDecryptor();
-        using var cs = new CryptoStream(input, decryptor, CryptoStreamMode.Read);
+        using var cs = new CryptoStream(input, decryptor, CryptoStreamMode.Read, leaveOpen);
         
         const int bufferSize = 64 * 1024; // 64KB buffer
         cs.CopyTo(output, bufferSize);

@@ -700,8 +700,9 @@ public partial class Form1 : Form
             return;
 
         var result = MessageBox.Show(
-            $"This will temporarily lock the folder:\n{folder}\n\n" +
-            "The folder will be unlocked immediately after the test.\n" +
+            $"This will temporarily deny access to:\n{folder}\n\n" +
+            "No files will be read, written or deleted - only the folder's permissions change.\n" +
+            "They are restored as soon as you close the confirmation.\n\n" +
             "Continue?",
             "Test Lock",
             MessageBoxButtons.YesNo,
@@ -710,28 +711,59 @@ public partial class Form1 : Form
         if (result != DialogResult.Yes)
             return;
 
+        if (!PathGuard.TryValidate(folder, out var guard))
+        {
+            ShowStatus(guard.Message, true);
+            return;
+        }
+
+        // The snapshot is taken before anything changes and is restored in a finally block, so the
+        // folder cannot be left denied because the dialog was dismissed by a crash or the process
+        // was killed. See ARCHITECTURE-REVIEW.md finding [G-3].
+        AclSnapshot? snapshot = null;
+
         try
         {
-            AclHelper.DenyAccess(folder);
-            ShowStatus($"Folder locked successfully: {folder}", false);
+            snapshot = FolderAclManager.Capture(guard.Path);
+            FolderAclManager.ApplyLock(guard.Path);
+
+            ShowStatus($"Folder locked: {guard.Path}", false);
 
             MessageBox.Show(
-                "Folder locked successfully!\n\n" +
-                "Try to access the folder now - you should see an access denied message.\n" +
-                "Click OK to unlock the folder.",
+                "The folder is now locked.\n\n" +
+                "Try to open it - Explorer should refuse access.\n" +
+                "No files have been modified.\n\n" +
+                "Click OK to restore the original permissions.",
                 "Lock Test",
                 MessageBoxButtons.OK,
                 MessageBoxIcon.Information);
-
-            AclHelper.AllowAccess(folder);
-            ShowStatus($"Folder unlocked: {folder}", false);
         }
         catch (Exception ex)
         {
             ShowStatus($"Test failed: {ex.Message}", true);
-            
-            // Try to unlock in case of partial success
-            try { AclHelper.AllowAccess(folder); } catch { }
+        }
+        finally
+        {
+            if (snapshot is { IsRestorable: true })
+            {
+                try
+                {
+                    FolderAclManager.Restore(guard.Path, snapshot);
+
+                    ShowStatus(
+                        FolderAclManager.MatchesSnapshot(guard.Path, snapshot)
+                            ? $"Original permissions restored: {guard.Path}"
+                            : $"Permissions restored, but they do not exactly match the snapshot: {guard.Path}",
+                        false);
+                }
+                catch (Exception restoreEx)
+                {
+                    ShowStatus(
+                        $"WARNING: could not restore permissions on {guard.Path}: {restoreEx.Message}. " +
+                        "Run GameLocker.Recovery to repair it.",
+                        true);
+                }
+            }
         }
     }
 

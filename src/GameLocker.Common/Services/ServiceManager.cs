@@ -7,7 +7,16 @@ namespace GameLocker.Common.Services;
 /// </summary>
 public static class ServiceManager
 {
-    private const string ServiceName = "GameLocker Service";
+    /// <summary>
+    /// The Windows service name.
+    /// </summary>
+    /// <remarks>
+    /// This must match <c>sc create</c> in the installers and <c>options.ServiceName</c> in the
+    /// service host. The three disagreed - the binaries used "GameLocker Service" while every
+    /// installer registered "GameLockerService" - so which name worked depended on which layer you
+    /// asked. See ARCHITECTURE-REVIEW.md finding [T-10]. The registered name wins.
+    /// </remarks>
+    private const string ServiceName = "GameLockerService";
     
     /// <summary>
     /// Checks if the GameLocker service is installed

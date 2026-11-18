@@ -32,10 +32,11 @@
 
 param(
     [Parameter(Mandatory=$false)]
-    [string]$InstallPath = "C:\Program Files\GameLocker",
+    [string]$InstallPath = (Join-Path $env:ProgramFiles 'GameLocker'),
     
     [Parameter(Mandatory=$false)]
-    [string]$ServiceName = "GameLockerService",
+    [ValidateSet('GameLockerService')]
+    [string]$ServiceName = 'GameLockerService',
     
     [Parameter(Mandatory=$false)]
     [switch]$Silent = $false
@@ -55,10 +56,18 @@ if ([string]::IsNullOrEmpty($ScriptDir)) {
 }
 
 # Global variables
+$InstallPath = [IO.Path]::GetFullPath($InstallPath)
 $ServicePath = Join-Path $InstallPath "Service"
 $ConfigPath = Join-Path $InstallPath "ConfigUI"
+$RecoveryPath = Join-Path $InstallPath "Recovery"
 $LogPath = Join-Path $InstallPath "Logs"
 $DataPath = Join-Path $env:ProgramData "GameLocker"
+$PublishPath = Join-Path $ScriptDir 'publish'
+$Payload = [ordered]@{
+    service = @{ Directory = $ServicePath; Executable = 'GameLocker.Service.exe' }
+    configui = @{ Directory = $ConfigPath; Executable = 'GameLocker.ConfigUI.exe' }
+    recovery = @{ Directory = $RecoveryPath; Executable = 'GameLocker.Recovery.exe' }
+}
 
 Write-Host "======================================" -ForegroundColor Green
 Write-Host "    GameLocker Complete Setup v1.0    " -ForegroundColor Green
@@ -78,55 +87,35 @@ function Test-Administrator {
 
 function Stop-ExistingService {
     Write-Status "Checking for existing GameLocker service..." "Cyan"
-    
-    # Check for both possible service names (with and without space)
-    $serviceNames = @($ServiceName, "GameLocker Service", "GameLockerService")
-    
-    foreach ($svcName in $serviceNames) {
+
+    foreach ($name in @($ServiceName, 'GameLocker Service')) {
+        $service = Get-Service -Name $name -ErrorAction SilentlyContinue
+        if (!$service) { continue }
+
         try {
-            $service = Get-Service -Name $svcName -ErrorAction SilentlyContinue
-            if ($service) {
-                Write-Status "Found existing service '$svcName', removing it..." "Yellow"
-                
-                # Stop the service if running
-                if ($service.Status -eq 'Running') {
-                    Write-Status "Stopping running service..." "Yellow"
-                    Stop-Service -Name $svcName -Force -ErrorAction SilentlyContinue
-                    Start-Sleep -Seconds 3
+            if ($service.Status -ne 'Stopped') {
+                if ($service.Status -ne 'StopPending') {
+                    Stop-Service -InputObject $service
                 }
-                
-                # Try to delete the service using sc.exe
-                Write-Status "Deleting existing service '$svcName'..." "Yellow"
-                $deleteResult = sc.exe delete "`"$svcName`"" 2>&1
-                
-                # Wait for service to be fully removed
-                $attempts = 0
-                while ($attempts -lt 10) {
-                    $checkService = Get-Service -Name $svcName -ErrorAction SilentlyContinue
-                    if (-not $checkService) {
-                        Write-Status "Service '$svcName' removed successfully" "Green"
-                        break
-                    }
-                    $attempts++
-                    Start-Sleep -Seconds 1
-                }
+                $service.WaitForStatus('Stopped', [TimeSpan]::FromSeconds(30))
+            }
+        } finally {
+            $service.Dispose()
+        }
+
+        if ($name -ne $ServiceName) {
+            $deleteResult = sc.exe delete $name
+            if ($LASTEXITCODE -ne 0) {
+                throw "Could not remove the legacy service '$name'. $deleteResult"
             }
         }
-        catch {
-            # Ignore errors for individual service name checks
-        }
     }
-    
-    Write-Status "Service cleanup complete, proceeding with installation" "Gray"
-    
-    # Extra safety: wait a moment before proceeding
-    Start-Sleep -Seconds 2
 }
 
 function Create-Directories {
     Write-Status "Creating installation directories..." "Cyan"
     
-    $directories = @($InstallPath, $ServicePath, $ConfigPath, $LogPath, $DataPath)
+    $directories = @($InstallPath, $ServicePath, $ConfigPath, $RecoveryPath, $LogPath, $DataPath)
     foreach ($dir in $directories) {
         if (!(Test-Path $dir)) {
             New-Item -ItemType Directory -Path $dir -Force | Out-Null
@@ -137,39 +126,10 @@ function Create-Directories {
 
 function Copy-Files {
     Write-Status "Copying GameLocker files..." "Cyan"
-    
-    # Use script-level $ScriptDir variable (captured at top of script)
-    # The publish folder is in the same directory as this script
-    $publishDir = Join-Path $ScriptDir "publish"
-    
-    Write-Status "Looking for files in: $publishDir" "Gray"
-    
-    # Copy service files
-    $serviceSource = Join-Path $publishDir "service"
-    if (Test-Path $serviceSource) {
-        Copy-Item -Path "$serviceSource\*" -Destination $ServicePath -Recurse -Force
-        Write-Status "Service files copied to $ServicePath" "Gray"
-    } else {
-        throw "Service files not found at $serviceSource. Please run 'dotnet publish' first."
-    }
-    
-    # Copy config UI files
-    $configSource = Join-Path $publishDir "configui"
-    if (Test-Path $configSource) {
-        Copy-Item -Path "$configSource\*" -Destination $ConfigPath -Recurse -Force
-        Write-Status "Config UI files copied to $ConfigPath" "Gray"
-    } else {
-        throw "Config UI files not found at $configSource. Please ensure publish folder is next to this script."
-    }
-    
-    # Copy configuration files from service folder (they're already there)
-    $configFiles = @("appsettings.json", "appsettings.Development.json")
-    foreach ($configFile in $configFiles) {
-        $sourceConfig = Join-Path $serviceSource $configFile
-        if (Test-Path $sourceConfig) {
-            Copy-Item -Path $sourceConfig -Destination $ServicePath -Force
-            Write-Status "Configuration file $configFile copied" "Gray"
-        }
+
+    foreach ($component in $Payload.GetEnumerator()) {
+        $source = Join-Path $PublishPath $component.Key
+        Copy-Item -Path (Join-Path $source '*') -Destination $component.Value.Directory -Recurse -Force
     }
 }
 
@@ -182,8 +142,8 @@ function Install-Service {
         throw "Service executable not found at: $serviceExePath"
     }
     
-    # Install the service
-    $createResult = sc.exe create $ServiceName binpath= "`"$serviceExePath`"" start= auto DisplayName= "GameLocker Service" 2>&1
+    $operation = if (Get-Service -Name $ServiceName -ErrorAction SilentlyContinue) { 'config' } else { 'create' }
+    $createResult = sc.exe $operation $ServiceName binpath= "`"$serviceExePath`"" start= auto DisplayName= "GameLocker Service" 2>&1
     if ($LASTEXITCODE -ne 0) {
         throw "Failed to create service: $createResult"
     }
@@ -219,26 +179,21 @@ function Configure-Service {
 }
 
 function Set-Permissions {
-    Write-Status "Setting up permissions..." "Cyan"
-    
-    try {
-        # Grant service account permissions to installation directory
-        $acl = Get-Acl $InstallPath
-        $accessRule = New-Object System.Security.AccessControl.FileSystemAccessRule("NT AUTHORITY\LOCAL SERVICE","FullControl","ContainerInherit,ObjectInherit","None","Allow")
-        $acl.SetAccessRule($accessRule)
-        Set-Acl -Path $InstallPath -AclObject $acl
-        
-        # Grant permissions to data directory
-        $acl = Get-Acl $DataPath
-        $accessRule = New-Object System.Security.AccessControl.FileSystemAccessRule("NT AUTHORITY\LOCAL SERVICE","FullControl","ContainerInherit,ObjectInherit","None","Allow")
-        $acl.SetAccessRule($accessRule)
-        Set-Acl -Path $DataPath -AclObject $acl
-        
-        Write-Status "Permissions configured" "Gray"
+    Write-Status 'Securing GameLocker data...' 'Cyan'
+    $directory = Get-Item -LiteralPath $DataPath -Force
+    if (!$directory.PSIsContainer -or ($directory.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+        throw "Data path is not an ordinary directory: $DataPath"
     }
-    catch {
-        Write-Status "Warning: Could not set some permissions: $($_.Exception.Message)" "Yellow"
+
+    $acl = [Security.AccessControl.DirectorySecurity]::new()
+    $acl.SetAccessRuleProtection($true, $false)
+    $inheritance = [Security.AccessControl.InheritanceFlags]'ContainerInherit,ObjectInherit'
+    foreach ($type in @('LocalSystemSid', 'BuiltinAdministratorsSid')) {
+        $sid = [Security.Principal.SecurityIdentifier]::new([Security.Principal.WellKnownSidType]$type, $null)
+        $rule = [Security.AccessControl.FileSystemAccessRule]::new($sid, 'FullControl', $inheritance, 'None', 'Allow')
+        $acl.AddAccessRule($rule)
     }
+    [IO.Directory]::SetAccessControl($DataPath, $acl)
 }
 
 function Create-StartMenuShortcuts {
@@ -260,6 +215,12 @@ function Create-StartMenuShortcuts {
         $configShortcut.WorkingDirectory = $ConfigPath
         $configShortcut.Description = "Configure GameLocker settings"
         $configShortcut.Save()
+
+        $recoveryShortcut = $shell.CreateShortcut((Join-Path $gameLockFolder 'GameLocker Recovery.lnk'))
+        $recoveryShortcut.TargetPath = Join-Path $RecoveryPath 'GameLocker.Recovery.exe'
+        $recoveryShortcut.WorkingDirectory = $RecoveryPath
+        $recoveryShortcut.Description = 'List folders that need repair'
+        $recoveryShortcut.Save()
         
         # Uninstall shortcut
         $uninstallShortcut = $shell.CreateShortcut((Join-Path $gameLockFolder "Uninstall GameLocker.lnk"))
@@ -281,65 +242,74 @@ function Create-UninstallScript {
     $uninstallScript = @'
 #Requires -RunAsAdministrator
 
+$ErrorActionPreference = 'Stop'
 Write-Host "GameLocker Uninstaller" -ForegroundColor Red
 Write-Host "======================" -ForegroundColor Red
 
 $ServiceName = "GameLockerService"
-$InstallPath = "C:\Program Files\GameLocker"
+$InstallPath = [IO.Path]::GetFullPath($PSScriptRoot)
 $DataPath = "$env:ProgramData\GameLocker"
+$recoveryExe = Join-Path $InstallPath 'Recovery/GameLocker.Recovery.exe'
+if (!(Test-Path -LiteralPath $recoveryExe -PathType Leaf)) {
+    throw "Uninstall cancelled because the recovery tool is missing at '$recoveryExe'."
+}
 
-# Stop and remove service
-try {
-    $service = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
-    if ($service) {
-        Write-Host "Stopping GameLocker service..." -ForegroundColor Yellow
-        Stop-Service -Name $ServiceName -Force -NoWait
-        Start-Sleep -Seconds 3
-        
-        Write-Host "Removing GameLocker service..." -ForegroundColor Yellow
-        sc.exe delete $ServiceName | Out-Null
+Write-Host 'Stopping GameLocker and restoring managed folders...'
+$service = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
+if ($service) {
+    try {
+        if ($service.Status -ne 'Stopped') {
+            if ($service.Status -ne 'StopPending') {
+                Stop-Service -InputObject $service
+            }
+            $service.WaitForStatus('Stopped', [TimeSpan]::FromSeconds(30))
+        }
+    } finally {
+        $service.Dispose()
     }
 }
-catch {
-    Write-Host "Warning: Could not remove service: $($_.Exception.Message)" -ForegroundColor Yellow
+
+& $recoveryExe restore-all
+if ($LASTEXITCODE -ne 0) {
+    throw "Uninstall cancelled. Repair the folders reported above and run the uninstaller again."
 }
 
-# Remove installation directory
-if (Test-Path $InstallPath) {
-    Write-Host "Removing installation directory..." -ForegroundColor Yellow
-    Remove-Item -Path $InstallPath -Recurse -Force -ErrorAction SilentlyContinue
+if ($service) {
+    sc.exe delete $ServiceName | Out-Host
+    if ($LASTEXITCODE -ne 0) {
+        throw 'GameLocker folders were restored. The service could not be removed, so the installed files were kept.'
+    }
 }
 
-# Remove Start Menu shortcuts
+# Remove the payload directories without deleting other contents of a custom installation root.
+$installPrefix = $InstallPath.TrimEnd([char[]]@('\', '/')) + [IO.Path]::DirectorySeparatorChar
+foreach ($directory in @('Service', 'ConfigUI', 'Recovery')) {
+    $component = Join-Path $InstallPath $directory
+    if (!(Test-Path -LiteralPath $component)) { continue }
+    $target = (Resolve-Path -LiteralPath $component).ProviderPath
+    $item = Get-Item -LiteralPath $target -Force
+    if (!$target.StartsWith($installPrefix, [StringComparison]::OrdinalIgnoreCase) -or
+        !$item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+        throw "Uninstall could not safely remove '$component'."
+    }
+    Remove-Item -LiteralPath $target -Recurse -Force
+}
+
 $startMenuPath = [Environment]::GetFolderPath('CommonPrograms')
-$gameLockFolder = Join-Path $startMenuPath "GameLocker"
-if (Test-Path $gameLockFolder) {
-    Write-Host "Removing Start Menu shortcuts..." -ForegroundColor Yellow
-    Remove-Item -Path $gameLockFolder -Recurse -Force -ErrorAction SilentlyContinue
+$gameLockFolder = Join-Path $startMenuPath 'GameLocker'
+foreach ($name in @('GameLocker Configuration.lnk', 'GameLocker Recovery.lnk', 'Uninstall GameLocker.lnk')) {
+    $shortcut = Join-Path $gameLockFolder $name
+    if (Test-Path -LiteralPath $shortcut -PathType Leaf) {
+        Remove-Item -LiteralPath $shortcut -Force
+    }
 }
 
-# The data directory is NEVER deleted here.
-#
-# It contains folder_key.dat, the only copy of the key that can decrypt game files. This script
-# used to offer to delete it behind a prompt phrased as being about "configuration files", so
-# answering "n" permanently destroyed every encrypted game on the machine with no warning and no
-# key export. See ARCHITECTURE-REVIEW.md finding [H-2].
-#
-# Deleting it is only safe once every managed folder has been verified unlocked and decrypted.
-# That check is implemented in Phase 6 of REMEDIATION-PLAN.md.
 if (Test-Path $DataPath) {
-    Write-Host ""
-    Write-Host "Configuration and encryption keys have been LEFT IN PLACE at:" -ForegroundColor Yellow
-    Write-Host "  $DataPath" -ForegroundColor Yellow
-    Write-Host ""
-    Write-Host "Do not delete this folder while any game folder is still encrypted -" -ForegroundColor Yellow
-    Write-Host "folder_key.dat is the only key that can decrypt those files." -ForegroundColor Yellow
+    Write-Host "Configuration, state and keys were kept at $DataPath."
 }
 
-Write-Host ""
+Remove-Item -LiteralPath $PSCommandPath -Force
 Write-Host "GameLocker has been uninstalled." -ForegroundColor Green
-Write-Host "Press any key to exit..."
-$null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
 '@
     
     $uninstallPath = Join-Path $InstallPath "GameLocker-Uninstall.ps1"
@@ -350,21 +320,13 @@ $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
 
 function Start-GameLockerService {
     Write-Status "Starting GameLocker service..." "Cyan"
-    
+
+    $service = Get-Service -Name $ServiceName
     try {
-        # Use fully-qualified cmdlet name to avoid infinite recursion
-        Microsoft.PowerShell.Management\Start-Service -Name $ServiceName
-        Start-Sleep -Seconds 2
-        
-        $service = Microsoft.PowerShell.Management\Get-Service -Name $ServiceName
-        if ($service.Status -eq 'Running') {
-            Write-Status "Service started successfully" "Green"
-        } else {
-            Write-Status "Warning: Service may not have started correctly. Status: $($service.Status)" "Yellow"
-        }
-    }
-    catch {
-        Write-Status "Warning: Could not start service: $($_.Exception.Message)" "Yellow"
+        Start-Service -InputObject $service
+        $service.WaitForStatus('Running', [TimeSpan]::FromSeconds(30))
+    } finally {
+        $service.Dispose()
     }
 }
 
@@ -409,14 +371,32 @@ try {
     
     Write-Status "Starting GameLocker installation..." "Green"
     Write-Status "Install Path: $InstallPath" "Gray"
-    
+
+    foreach ($component in $Payload.GetEnumerator()) {
+        $binary = Join-Path (Join-Path $PublishPath $component.Key) $component.Value.Executable
+        if (!(Test-Path -LiteralPath $binary -PathType Leaf)) {
+            throw "Installer package is missing '$binary'."
+        }
+        if (Test-Path -LiteralPath $component.Value.Directory) {
+            $destination = Get-Item -LiteralPath $component.Value.Directory -Force
+            if (!$destination.PSIsContainer -or ($destination.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+                throw "Installation directory is not an ordinary directory: $($component.Value.Directory)"
+            }
+            $installedBinary = Join-Path $component.Value.Directory $component.Value.Executable
+            if (!(Test-Path -LiteralPath $installedBinary -PathType Leaf) -and
+                (Get-ChildItem -LiteralPath $component.Value.Directory -Force | Select-Object -First 1)) {
+                throw "Installation would overwrite an unrelated folder: $($component.Value.Directory)"
+            }
+        }
+    }
+
     # Installation steps
     Stop-ExistingService
     Create-Directories
+    Set-Permissions
     Copy-Files
     Install-Service
     Configure-Service
-    Set-Permissions
     Create-StartMenuShortcuts
     Create-UninstallScript
     Start-GameLockerService

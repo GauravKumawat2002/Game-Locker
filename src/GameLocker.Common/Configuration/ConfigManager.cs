@@ -2,6 +2,7 @@ using System.Text;
 using System.Text.Json;
 using GameLocker.Common.Encryption;
 using GameLocker.Common.Models;
+using GameLocker.Common.Security;
 
 namespace GameLocker.Common.Configuration;
 
@@ -76,7 +77,17 @@ public class ConfigManager
     /// <param name="config">The configuration to save.</param>
     public async Task SaveConfigAsync(GameLockerConfig config)
     {
+        ValidateConfig(config);
         EnsureDirectoryExists();
+        PathGuard.EnsureNoReparsePoints(_configDirectory);
+        var writeLockPath = Path.Combine(_configDirectory, "config.write.lock");
+        PathGuard.EnsureNoReparsePoints(writeLockPath);
+        using var writeLock = new FileStream(writeLockPath, FileMode.OpenOrCreate,
+            FileAccess.ReadWrite, FileShare.None);
+
+        var existing = await LoadConfigResultAsync();
+        if (existing.IsDamaged)
+            throw new InvalidDataException($"The saved configuration must be recovered before it can be replaced. {existing.Error}");
 
         // Serialize config to JSON
         var configJson = JsonSerializer.Serialize(config, JsonOptions);
@@ -86,6 +97,8 @@ public class ConfigManager
         byte[] key;
         byte[] iv;
 
+        PathGuard.EnsureNoReparsePoints(_keyFilePath);
+        PathGuard.EnsureNoReparsePoints(_ivFilePath);
         if (File.Exists(_keyFilePath) && File.Exists(_ivFilePath))
         {
             // Load existing keys
@@ -106,39 +119,108 @@ public class ConfigManager
         // Encrypt the config
         var encryptedConfig = AesEncryptionHelper.Encrypt(configBytes, key, iv);
 
-        // Save the encrypted config
-        await File.WriteAllBytesAsync(_configFilePath, encryptedConfig);
+        // Write to a temporary file, force it to stable storage, then swap it into place, keeping
+        // the previous version as a backup. Writing directly over config.dat meant a power loss
+        // during save truncated it, and a truncated config was indistinguishable from a first run -
+        // at which point saving again destroyed the folder list.
+        // See ARCHITECTURE-REVIEW.md findings [F-2] and [G-4].
+        var tempPath = _configFilePath + $".{Guid.NewGuid():N}.tmp";
+        try
+        {
+            using (var stream = new FileStream(tempPath, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+            {
+                await stream.WriteAsync(encryptedConfig);
+                stream.Flush(flushToDisk: true);
+            }
+
+            PathGuard.EnsureNoReparsePoints(BackupFilePath);
+            if (existing.IsLoaded)
+                File.Replace(tempPath, _configFilePath, BackupFilePath, ignoreMetadataErrors: true);
+            else
+                File.Move(tempPath, _configFilePath);
+        }
+        finally
+        {
+            File.Delete(tempPath);
+        }
     }
+
+    /// <summary>
+    /// Gets the path of the backup written on each successful save.
+    /// </summary>
+    public string BackupFilePath => _configFilePath + ".bak";
 
     /// <summary>
     /// Loads and decrypts the configuration.
     /// </summary>
-    /// <returns>The decrypted configuration, or null if not found.</returns>
-    public async Task<GameLockerConfig?> LoadConfigAsync()
-    {
-        if (!ConfigExists())
-        {
-            return null;
-        }
+    /// <returns>The decrypted configuration, or <c>null</c> if it is missing or unreadable.</returns>
+    /// <remarks>
+    /// Prefer <see cref="LoadConfigResultAsync"/>. This overload cannot distinguish "no
+    /// configuration yet" from "the configuration is damaged", and treating the second as the first
+    /// is how a folder list gets silently overwritten.
+    /// </remarks>
+    public async Task<GameLockerConfig?> LoadConfigAsync() =>
+        (await LoadConfigResultAsync()).Config;
 
+    /// <summary>
+    /// Loads and decrypts the configuration, reporting exactly what happened.
+    /// </summary>
+    /// <returns>The outcome, including the configuration when one was read.</returns>
+    public async Task<ConfigLoadResult> LoadConfigResultAsync()
+    {
         try
         {
+            byte[] encryptedConfig;
+            try
+            {
+                PathGuard.EnsureNoReparsePoints(_configFilePath);
+                encryptedConfig = await File.ReadAllBytesAsync(_configFilePath);
+            }
+            catch (Exception ex) when (ex is FileNotFoundException or DirectoryNotFoundException)
+            {
+                return File.Exists(BackupFilePath)
+                    ? ConfigLoadResult.Unreadable($"{_configFilePath} is missing. A backup exists at {BackupFilePath}.")
+                    : ConfigLoadResult.NotFound();
+            }
+
             // Load and unprotect keys
+            PathGuard.EnsureNoReparsePoints(_keyFilePath);
+            PathGuard.EnsureNoReparsePoints(_ivFilePath);
             var key = await DpapiHelper.UnprotectFromFileAsync(_keyFilePath);
             var iv = await DpapiHelper.UnprotectFromFileAsync(_ivFilePath);
 
             // Load and decrypt config
-            var encryptedConfig = await File.ReadAllBytesAsync(_configFilePath);
             var decryptedBytes = AesEncryptionHelper.Decrypt(encryptedConfig, key, iv);
 
             // Deserialize
             var configJson = Encoding.UTF8.GetString(decryptedBytes);
-            return JsonSerializer.Deserialize<GameLockerConfig>(configJson, JsonOptions);
+            var config = JsonSerializer.Deserialize<GameLockerConfig>(configJson, JsonOptions);
+
+            if (config is null)
+                return ConfigLoadResult.Unreadable("The configuration decrypted but contained no data.");
+
+            ValidateConfig(config);
+            return ConfigLoadResult.Loaded(config);
         }
-        catch (Exception)
+        catch (Exception ex)
         {
-            // If decryption fails, return null
-            return null;
+            // A configuration file exists, so this is damage - never a first run.
+            return ConfigLoadResult.Unreadable(ex.Message);
+        }
+    }
+
+    private static void ValidateConfig(GameLockerConfig config)
+    {
+        ArgumentNullException.ThrowIfNull(config);
+        if (config.AllowedDays is null || config.GameFolderPaths is null || config.FoldersPendingRestore is null ||
+            config.FolderEncryptionSettings is null || config.EncryptionSettings is null ||
+            config.DurationHours is < 1 or > 24 || !Enum.IsDefined(config.LockMode) ||
+            config.AllowedDays.Any(day => !Enum.IsDefined(day)) ||
+            config.GameFolderPaths.Concat(config.FoldersPendingRestore).Any(string.IsNullOrWhiteSpace) ||
+            config.FolderEncryptionSettings.Any(settings => settings is null ||
+                string.IsNullOrWhiteSpace(settings.FolderPath) || settings.SelectedExtensions is null))
+        {
+            throw new InvalidDataException("The saved schedule or folder settings contain invalid values.");
         }
     }
 

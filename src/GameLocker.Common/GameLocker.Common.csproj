@@ -10,6 +10,12 @@
     <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="8.0.0" />
     <PackageReference Include="Microsoft.Toolkit.Uwp.Notifications" Version="7.1.3" />
     <PackageReference Include="System.ServiceProcess.ServiceController" Version="8.0.1" />
+    <!--
+      Abstractions only. Diagnostics used to go to Console.WriteLine, which for a Windows Service
+      reaches no console, no Event Log and no file - so every per-file failure in production was
+      invisible. See ARCHITECTURE-REVIEW.md finding [T-9].
+    -->
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="8.0.2" />
   </ItemGroup>
 
 </Project>

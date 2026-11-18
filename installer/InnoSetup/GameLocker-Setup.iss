@@ -7,6 +7,10 @@
 #define MyAppURL "https://github.com/GauravKumawat2002/Game-Locker"
 #define MyAppServiceExeName "GameLocker.Service.exe"
 #define MyAppConfigExeName "GameLocker.ConfigUI.exe"
+#define MyAppRecoveryExeName "GameLocker.Recovery.exe"
+#ifndef GameLockerPublishDirectory
+  #define GameLockerPublishDirectory "..\..\installer-package\publish"
+#endif
 
 [Setup]
 ; NOTE: The value of AppId uniquely identifies this application.
@@ -42,9 +46,10 @@ Name: "startservice"; Description: "Start GameLocker service after installation"
 
 [Files]
 ; Service files
-Source: "..\..\installer-package\publish\service\*"; DestDir: "{app}\Service"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "{#GameLockerPublishDirectory}\service\*"; DestDir: "{app}\Service"; Flags: ignoreversion recursesubdirs createallsubdirs
 ; Config UI files
-Source: "..\..\installer-package\publish\configui\*"; DestDir: "{app}\ConfigUI"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "{#GameLockerPublishDirectory}\configui\*"; DestDir: "{app}\ConfigUI"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "{#GameLockerPublishDirectory}\recovery\*"; DestDir: "{app}\Recovery"; Flags: ignoreversion recursesubdirs createallsubdirs
 ; NOTE: Don't use "Flags: ignoreversion" on any shared system files
 
 [Dirs]
@@ -62,6 +67,7 @@ Name: "{commonappdata}\{#MyAppName}"
 
 [Icons]
 Name: "{group}\{#MyAppName} Configuration"; Filename: "{app}\ConfigUI\{#MyAppConfigExeName}"
+Name: "{group}\{#MyAppName} Recovery"; Filename: "{app}\Recovery\{#MyAppRecoveryExeName}"
 Name: "{group}\Uninstall {#MyAppName}"; Filename: "{uninstallexe}"
 Name: "{autodesktop}\{#MyAppName} Configuration"; Filename: "{app}\ConfigUI\{#MyAppConfigExeName}"; Tasks: desktopicon
 
@@ -73,7 +79,8 @@ Filename: "icacls.exe"; Parameters: """{commonappdata}\{#MyAppName}"" /inheritan
 Filename: "icacls.exe"; Parameters: """{app}\Logs"" /inheritance:r /grant *S-1-5-18:(OI)(CI)F /grant *S-1-5-32-544:(OI)(CI)F"; Flags: runhidden waituntilterminated
 
 ; Install and start the Windows Service
-Filename: "sc.exe"; Parameters: "create GameLockerService binPath= ""{app}\Service\{#MyAppServiceExeName}"" start= auto DisplayName= ""GameLocker Service"""; Flags: runhidden waituntilterminated
+Filename: "sc.exe"; Parameters: "create GameLockerService binPath= ""{app}\Service\{#MyAppServiceExeName}"" start= auto DisplayName= ""GameLocker Service"""; Flags: runhidden waituntilterminated; Check: not HasCanonicalService
+Filename: "sc.exe"; Parameters: "config GameLockerService binPath= ""{app}\Service\{#MyAppServiceExeName}"" start= auto DisplayName= ""GameLocker Service"""; Flags: runhidden waituntilterminated; Check: HasCanonicalService
 Filename: "sc.exe"; Parameters: "description GameLockerService ""Automatically locks and unlocks game folders based on configured schedules."""; Flags: runhidden waituntilterminated
 Filename: "sc.exe"; Parameters: "failure GameLockerService reset= 30 actions= restart/5000/restart/10000/restart/15000"; Flags: runhidden waituntilterminated
 Filename: "sc.exe"; Parameters: "start GameLockerService"; Flags: runhidden waituntilterminated; Tasks: startservice
@@ -81,8 +88,7 @@ Filename: "sc.exe"; Parameters: "start GameLockerService"; Flags: runhidden wait
 Filename: "{app}\ConfigUI\{#MyAppConfigExeName}"; Description: "{cm:LaunchProgram,{#StringChange(MyAppName, '&', '&&')} Configuration}"; Flags: nowait postinstall skipifsilent
 
 [UninstallRun]
-; Stop and remove the Windows Service
-Filename: "sc.exe"; Parameters: "stop GameLockerService"; Flags: runhidden
+; InitializeUninstall has stopped the service and verified recovery.
 Filename: "sc.exe"; Parameters: "delete GameLockerService"; Flags: runhidden
 
 [UninstallDelete]
@@ -90,32 +96,75 @@ Type: filesandordirs; Name: "{app}\Logs"
 Type: dirifempty; Name: "{commonappdata}\{#MyAppName}"
 
 [Code]
+function HasCanonicalService(): Boolean;
+begin
+  Result := RegKeyExists(HKEY_LOCAL_MACHINE, 'SYSTEM\CurrentControlSet\Services\GameLockerService');
+end;
+
+function StopGameLockerServices(): Boolean;
+var
+  ExitCode: Integer;
+  StopCommand: String;
+begin
+  StopCommand := '-NoProfile -NonInteractive -Command "$ErrorActionPreference = ''Stop''; ' +
+    'foreach ($name in @(''GameLockerService'', ''GameLocker Service'')) { ' +
+    '$service = Get-Service -Name $name -ErrorAction SilentlyContinue; ' +
+    'if ($service -and $service.Status -ne ''Stopped'') { ' +
+    'if ($service.Status -ne ''StopPending'') { Stop-Service -InputObject $service }; ' +
+    '$service.WaitForStatus(''Stopped'', [TimeSpan]::FromSeconds(30)) } }"';
+  Result := Exec(ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'),
+    StopCommand, '', SW_HIDE, ewWaitUntilTerminated, ExitCode) and (ExitCode = 0);
+end;
+
+function InitializeUninstall(): Boolean;
+var
+  ExitCode: Integer;
+  RecoveryPath: String;
+begin
+  Result := False;
+  if not StopGameLockerServices() then
+  begin
+    SuppressibleMsgBox('GameLocker could not stop its service. Uninstall was cancelled.', mbError, MB_OK, IDOK);
+    Exit;
+  end;
+
+  RecoveryPath := ExpandConstant('{app}\Recovery\{#MyAppRecoveryExeName}');
+  if not Exec(RecoveryPath, 'restore-all', '', SW_HIDE, ewWaitUntilTerminated, ExitCode) or (ExitCode <> 0) then
+  begin
+    SuppressibleMsgBox('GameLocker could not verify that all game folders were restored. ' +
+      'Uninstall was cancelled. Run "' + RecoveryPath + '" restore-all from an administrator terminal.',
+      mbError, MB_OK, IDOK);
+    Exit;
+  end;
+
+  Result := True;
+end;
+
 function InitializeSetup(): Boolean;
 var
   ErrorCode: Integer;
-  NetFrameworkInstalled: Boolean;
+  ServiceKey: String;
 begin
   Result := True;
-  
-  // Check if .NET 8.0 Runtime is installed (not needed for self-contained builds)
-  // This is just a placeholder - we're using self-contained publish
-  
-  // Check if service already exists
-  if RegKeyExists(HKEY_LOCAL_MACHINE, 'SYSTEM\CurrentControlSet\Services\GameLockerService') then
+  ServiceKey := 'SYSTEM\CurrentControlSet\Services\';
+  if RegKeyExists(HKEY_LOCAL_MACHINE, ServiceKey + 'GameLockerService') or
+     RegKeyExists(HKEY_LOCAL_MACHINE, ServiceKey + 'GameLocker Service') then
   begin
-    if MsgBox('GameLocker service is already installed. Do you want to upgrade?', mbConfirmation, MB_YESNO) = IDNO then
+    if SuppressibleMsgBox('GameLocker service is already installed. Do you want to upgrade?',
+      mbConfirmation, MB_YESNO, IDYES) = IDNO then
     begin
       Result := False;
       Exit;
     end;
-    
-    // Stop existing service
-    Exec('sc.exe', 'stop GameLockerService', '', SW_HIDE, ewWaitUntilTerminated, ErrorCode);
-    Sleep(2000);
-    
-    // Delete existing service
-    Exec('sc.exe', 'delete GameLockerService', '', SW_HIDE, ewWaitUntilTerminated, ErrorCode);
-    Sleep(2000);
+
+    Result := StopGameLockerServices();
+    if Result and RegKeyExists(HKEY_LOCAL_MACHINE, ServiceKey + 'GameLocker Service') then
+      Result := Exec(ExpandConstant('{sys}\sc.exe'), 'delete "GameLocker Service"',
+        '', SW_HIDE, ewWaitUntilTerminated, ErrorCode) and (ErrorCode = 0);
+
+    if not Result then
+      SuppressibleMsgBox('GameLocker could not stop or migrate its service. Upgrade was cancelled.',
+        mbError, MB_OK, IDOK);
   end;
 end;
 

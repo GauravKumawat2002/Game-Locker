@@ -3,55 +3,43 @@
 
 param(
     [Parameter(Mandatory=$false)]
-    [string]$OutputPath = "..\..\installer-package"
+    [string]$OutputPath = (Join-Path $PSScriptRoot '../../installer-package')
 )
+
+$ErrorActionPreference = 'Stop'
 
 Write-Host "GameLocker Package Builder v1.0" -ForegroundColor Green
 Write-Host "================================" -ForegroundColor Green
 
-$scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
-$projectRoot = Split-Path -Parent (Split-Path -Parent $scriptDir)
+$scriptDir = $PSScriptRoot
+$projectRoot = [IO.Path]::GetFullPath((Join-Path $scriptDir '../..'))
+$OutputPath = [IO.Path]::GetFullPath($OutputPath)
 
-# Create output directory
-if (Test-Path $OutputPath) {
-    Remove-Item $OutputPath -Recurse -Force
-}
 New-Item -ItemType Directory -Path $OutputPath -Force | Out-Null
 
 Write-Host "Building release versions..." -ForegroundColor Cyan
 
-# Build and publish service
-Set-Location $projectRoot
-dotnet publish "src/GameLocker.Service/GameLocker.Service.csproj" -c Release -r win-x64 --self-contained --output "publish/service" | Out-Host
-
-if ($LASTEXITCODE -ne 0) {
-    Write-Host "Failed to build service!" -ForegroundColor Red
-    exit 1
+$components = [ordered]@{
+    service = 'GameLocker.Service'
+    configui = 'GameLocker.ConfigUI'
+    recovery = 'GameLocker.Recovery'
 }
-
-# Build and publish config UI
-dotnet publish "src/GameLocker.ConfigUI/GameLocker.ConfigUI.csproj" -c Release -r win-x64 --self-contained --output "publish/configui" | Out-Host
-
-if ($LASTEXITCODE -ne 0) {
-    Write-Host "Failed to build config UI!" -ForegroundColor Red
-    exit 1
+foreach ($component in $components.GetEnumerator()) {
+    $projectPath = Join-Path $projectRoot "src/$($component.Value)/$($component.Value).csproj"
+    $publishPath = Join-Path $OutputPath "publish/$($component.Key)"
+    dotnet publish $projectPath -c Release -r win-x64 --self-contained true --output $publishPath | Out-Host
+    if ($LASTEXITCODE -ne 0) {
+        throw "Failed to publish $($component.Value) with exit code $LASTEXITCODE."
+    }
 }
 
 Write-Host "Copying files to installer package..." -ForegroundColor Cyan
 
-# Copy installer files
-Copy-Item -Path "$scriptDir\*" -Destination $OutputPath -Recurse -Force
-
-# Copy published applications
-New-Item -ItemType Directory -Path "$OutputPath\publish" -Force | Out-Null
-Copy-Item -Path "$projectRoot\publish\*" -Destination "$OutputPath\publish" -Recurse -Force
-
-# Copy configuration files
-Copy-Item -Path "$projectRoot\publish\*.json" -Destination "$OutputPath\publish" -Force -ErrorAction SilentlyContinue
+Copy-Item -LiteralPath (Join-Path $scriptDir 'GameLocker-Setup.ps1'), (Join-Path $scriptDir 'Setup.bat') -Destination $OutputPath -Force
 
 Write-Host "Creating README for installer..." -ForegroundColor Cyan
 
-$readme = @"
+$readme = @'
 # GameLocker Installer Package
 
 ## Installation Instructions
@@ -65,6 +53,7 @@ $readme = @"
 
 - GameLocker Windows Service (auto-starts with Windows)
 - GameLocker Configuration UI
+- GameLocker Recovery (administrator repair tool)
 - All required .NET runtime dependencies
 - Start Menu shortcuts
 - Automatic uninstaller
@@ -92,7 +81,7 @@ If you encounter any issues:
 
 Use "Uninstall GameLocker" from the Start Menu or run:
 `C:\Program Files\GameLocker\GameLocker-Uninstall.ps1` as Administrator
-"@
+'@
 
 $readme | Out-File -FilePath "$OutputPath\README.txt" -Encoding UTF8
 
