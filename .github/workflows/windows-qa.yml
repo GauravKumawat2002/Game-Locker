@@ -1,0 +1,59 @@
+name: Windows QA
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - '.github/workflows/windows-qa.yml'
+      - 'Build-Installer.ps1'
+      - 'installer/**'
+      - 'GameLocker.sln'
+      - 'src/**'
+      - 'tests/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  installer:
+    name: Elevated Windows tests (${{ matrix.package }})
+    runs-on: windows-2022
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        package: [ZIP, EXE]
+    steps:
+      - uses: actions/checkout@9f698171ed81b15d1823a05fc7211befd50c8ae0 # v6.0.3
+        with:
+          persist-credentials: false
+
+      - name: Build and test the installer
+        shell: powershell
+        env:
+          PACKAGE_KIND: ${{ matrix.package }}
+        run: |
+          $principal = [Security.Principal.WindowsPrincipal]::new([Security.Principal.WindowsIdentity]::GetCurrent())
+          if (!$principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+              throw 'Installer QA requires an elevated Windows runner.'
+          }
+
+          if ($env:PACKAGE_KIND -eq 'EXE' -and !(Get-Command ISCC.exe -ErrorAction SilentlyContinue)) {
+              $compiler = @($env:ProgramFiles, ${env:ProgramFiles(x86)}) |
+                  ForEach-Object { Join-Path $_ 'Inno Setup 6/ISCC.exe' } |
+                  Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } |
+                  Select-Object -First 1
+              if (!$compiler) { throw 'Inno Setup 6 compiler was not found.' }
+              $env:Path = (Split-Path -Parent $compiler) + ';' + $env:Path
+          }
+
+          $outputDirectory = Join-Path $env:RUNNER_TEMP 'gamelocker-installer-output'
+          $packageDirectory = Join-Path $env:RUNNER_TEMP 'gamelocker-package-payload'
+          & ./Build-Installer.ps1 -BuildType $env:PACKAGE_KIND -OutputDirectory $outputDirectory -PackageDirectory $packageDirectory
+          $installers = @(Get-ChildItem -LiteralPath $outputDirectory -Filter "*.$($env:PACKAGE_KIND.ToLowerInvariant())")
+          if ($installers.Count -ne 1) { throw "Expected exactly one built $env:PACKAGE_KIND installer." }
+          $env:GAMELOCKER_TEST_INSTALLER = $installers[0].FullName
+
+          dotnet test tests/GameLocker.Tests/GameLocker.Tests.csproj -c Release --logger 'console;verbosity=normal'
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
