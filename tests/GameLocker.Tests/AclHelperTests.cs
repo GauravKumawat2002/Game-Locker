@@ -6,8 +6,7 @@ namespace GameLocker.Tests;
 
 /// <summary>
 /// Unit tests for AclHelper class.
-/// NOTE: These tests require Administrator privileges to modify ACLs.
-/// Run with: dotnet test --filter "Category=RequiresAdmin" -- as admin
+/// Run the RequiresAdmin category from an elevated terminal to exercise the legacy ACL changes.
 /// </summary>
 public class AclHelperTests : IDisposable
 {
@@ -141,16 +140,10 @@ public class AclHelperTests : IDisposable
         Assert.Contains("does not exist", result.ToLower());
     }
 
-    [Fact]
+    [RequiresAdminFact]
     [Trait("Category", "RequiresAdmin")]
     public void DenyAccess_SetsAccessDenied()
     {
-        // Skip if not running as admin
-        if (!AclHelper.IsRunningAsAdmin())
-        {
-            return; // Skip test - requires admin
-        }
-
         // Act
         AclHelper.DenyAccess(_testFolder);
 
@@ -158,16 +151,10 @@ public class AclHelperTests : IDisposable
         Assert.True(AclHelper.IsAccessDenied(_testFolder));
     }
 
-    [Fact]
+    [RequiresAdminFact]
     [Trait("Category", "RequiresAdmin")]
     public void AllowAccess_RemovesDenyRule()
     {
-        // Skip if not running as admin
-        if (!AclHelper.IsRunningAsAdmin())
-        {
-            return; // Skip test - requires admin
-        }
-
         // Arrange - first deny access
         AclHelper.DenyAccess(_testFolder);
         Assert.True(AclHelper.IsAccessDenied(_testFolder));
@@ -179,16 +166,10 @@ public class AclHelperTests : IDisposable
         Assert.False(AclHelper.IsAccessDenied(_testFolder));
     }
 
-    [Fact]
+    [RequiresAdminFact]
     [Trait("Category", "RequiresAdmin")]
-    public void DenyAccess_PreservesSystemAccess()
+    public void DenyAccess_AddsExplicitSystemAllowRule()
     {
-        // Skip if not running as admin
-        if (!AclHelper.IsRunningAsAdmin())
-        {
-            return; // Skip test - requires admin
-        }
-
         // Act
         AclHelper.DenyAccess(_testFolder);
 
@@ -196,7 +177,7 @@ public class AclHelperTests : IDisposable
         var directoryInfo = new DirectoryInfo(_testFolder);
         var security = directoryInfo.GetAccessControl();
         var systemSid = new SecurityIdentifier(WellKnownSidType.LocalSystemSid, null);
-        var rules = security.GetAccessRules(true, true, typeof(SecurityIdentifier));
+        var rules = security.GetAccessRules(true, false, typeof(SecurityIdentifier));
 
         var hasSystemAllow = false;
         foreach (FileSystemAccessRule rule in rules)
@@ -213,16 +194,10 @@ public class AclHelperTests : IDisposable
         Assert.True(hasSystemAllow, "SYSTEM account should have explicit ALLOW rule after DenyAccess()");
     }
 
-    [Fact]
+    [RequiresAdminFact]
     [Trait("Category", "RequiresAdmin")]
-    public void DenyAccess_PreservesAdministratorsAccess()
+    public void DenyAccess_AddsExplicitAdministratorsAllowRule()
     {
-        // Skip if not running as admin
-        if (!AclHelper.IsRunningAsAdmin())
-        {
-            return; // Skip test - requires admin
-        }
-
         // Act
         AclHelper.DenyAccess(_testFolder);
 
@@ -230,7 +205,7 @@ public class AclHelperTests : IDisposable
         var directoryInfo = new DirectoryInfo(_testFolder);
         var security = directoryInfo.GetAccessControl();
         var adminsSid = new SecurityIdentifier(WellKnownSidType.BuiltinAdministratorsSid, null);
-        var rules = security.GetAccessRules(true, true, typeof(SecurityIdentifier));
+        var rules = security.GetAccessRules(true, false, typeof(SecurityIdentifier));
 
         var hasAdminsAllow = false;
         foreach (FileSystemAccessRule rule in rules)
@@ -247,16 +222,10 @@ public class AclHelperTests : IDisposable
         Assert.True(hasAdminsAllow, "Administrators should have explicit ALLOW rule after DenyAccess()");
     }
 
-    [Fact]
+    [RequiresAdminFact]
     [Trait("Category", "RequiresAdmin")]
     public void DenyAccess_DoesNotDenyEveryone()
     {
-        // Skip if not running as admin
-        if (!AclHelper.IsRunningAsAdmin())
-        {
-            return; // Skip test - requires admin
-        }
-
         // Act
         AclHelper.DenyAccess(_testFolder);
 
@@ -264,7 +233,7 @@ public class AclHelperTests : IDisposable
         var directoryInfo = new DirectoryInfo(_testFolder);
         var security = directoryInfo.GetAccessControl();
         var everyoneSid = new SecurityIdentifier(WellKnownSidType.WorldSid, null);
-        var rules = security.GetAccessRules(true, true, typeof(SecurityIdentifier));
+        var rules = security.GetAccessRules(true, false, typeof(SecurityIdentifier));
 
         var hasEveryoneDeny = false;
         foreach (FileSystemAccessRule rule in rules)
@@ -280,50 +249,31 @@ public class AclHelperTests : IDisposable
         Assert.False(hasEveryoneDeny, "Everyone (WorldSid) should NOT have DENY rule - it includes SYSTEM!");
     }
 
-    [Fact]
+    [RequiresAdminFact]
     [Trait("Category", "RequiresAdmin")]
-    public void DenyAccess_DeniesUsersGroup()
+    public void DenyAccess_BlocksUserContentAccessAndLeavesPermissionsRepairable()
     {
-        // Skip if not running as admin
-        if (!AclHelper.IsRunningAsAdmin())
-        {
-            return; // Skip test - requires admin
-        }
-
         // Act
         AclHelper.DenyAccess(_testFolder);
 
-        // Assert - Users group should have deny rule
+        // Confirm the legacy deny limits content access and leaves ACL repair rights available.
         var directoryInfo = new DirectoryInfo(_testFolder);
         var security = directoryInfo.GetAccessControl();
         var usersSid = new SecurityIdentifier(WellKnownSidType.BuiltinUsersSid, null);
-        var rules = security.GetAccessRules(true, true, typeof(SecurityIdentifier));
+        var rules = security.GetAccessRules(true, false, typeof(SecurityIdentifier));
+        var deny = Assert.Single(rules.Cast<FileSystemAccessRule>(), rule =>
+            rule.IdentityReference.Equals(usersSid) && rule.AccessControlType == AccessControlType.Deny);
 
-        var hasUsersDeny = false;
-        foreach (FileSystemAccessRule rule in rules)
-        {
-            if (rule.IdentityReference.Equals(usersSid) &&
-                rule.AccessControlType == AccessControlType.Deny &&
-                rule.FileSystemRights.HasFlag(FileSystemRights.FullControl))
-            {
-                hasUsersDeny = true;
-                break;
-            }
-        }
-
-        Assert.True(hasUsersDeny, "Users group should have DENY rule after DenyAccess()");
+        var contentRights = FileSystemRights.ReadData | FileSystemRights.WriteData | FileSystemRights.ExecuteFile;
+        var repairRights = FileSystemRights.ReadPermissions | FileSystemRights.ChangePermissions | FileSystemRights.TakeOwnership;
+        Assert.True(deny.FileSystemRights.HasFlag(contentRights));
+        Assert.Equal((FileSystemRights)0, deny.FileSystemRights & repairRights);
     }
 
-    [Fact]
+    [RequiresAdminFact]
     [Trait("Category", "RequiresAdmin")]
     public void LockUnlockCycle_WorksCorrectly()
     {
-        // Skip if not running as admin
-        if (!AclHelper.IsRunningAsAdmin())
-        {
-            return; // Skip test - requires admin
-        }
-
         // Initial state - should be unlocked
         Assert.False(AclHelper.IsAccessDenied(_testFolder));
 
@@ -344,16 +294,10 @@ public class AclHelperTests : IDisposable
         Assert.False(AclHelper.IsAccessDenied(_testFolder));
     }
 
-    [Fact]
+    [RequiresAdminFact]
     [Trait("Category", "RequiresAdmin")]
     public void DenyAccess_WithSubfolders_PropagatesACL()
     {
-        // Skip if not running as admin
-        if (!AclHelper.IsRunningAsAdmin())
-        {
-            return; // Skip test - requires admin
-        }
-
         // Create subfolder structure
         var subfolder = Path.Combine(_testFolder, "subfolder");
         Directory.CreateDirectory(subfolder);
@@ -363,23 +307,15 @@ public class AclHelperTests : IDisposable
         // Act - lock parent
         AclHelper.DenyAccess(_testFolder);
 
-        // Assert - parent should be marked as denied
         Assert.True(AclHelper.IsAccessDenied(_testFolder));
-        
-        // Note: Subfolders inherit ACL, but IsAccessDenied only checks explicit rules
-        // The actual access would be denied due to inheritance
+        Assert.True(AclHelper.IsAccessDenied(subfolder));
+        Assert.True(AclHelper.IsAccessDenied(deepFolder));
     }
 
-    [Fact]
+    [RequiresAdminFact]
     [Trait("Category", "RequiresAdmin")]
     public void AllowAccess_IdempotentOnUnlockedFolder()
     {
-        // Skip if not running as admin
-        if (!AclHelper.IsRunningAsAdmin())
-        {
-            return; // Skip test - requires admin
-        }
-
         // Folder is already unlocked
         Assert.False(AclHelper.IsAccessDenied(_testFolder));
 
@@ -389,16 +325,10 @@ public class AclHelperTests : IDisposable
         Assert.False(AclHelper.IsAccessDenied(_testFolder));
     }
 
-    [Fact]
+    [RequiresAdminFact]
     [Trait("Category", "RequiresAdmin")]
     public void DenyAccess_MultipleCallsAreIdempotent()
     {
-        // Skip if not running as admin
-        if (!AclHelper.IsRunningAsAdmin())
-        {
-            return; // Skip test - requires admin
-        }
-
         // Call DenyAccess multiple times
         AclHelper.DenyAccess(_testFolder);
         AclHelper.DenyAccess(_testFolder);
@@ -410,5 +340,14 @@ public class AclHelperTests : IDisposable
         // One AllowAccess should unlock it
         AclHelper.AllowAccess(_testFolder);
         Assert.False(AclHelper.IsAccessDenied(_testFolder));
+    }
+}
+
+internal sealed class RequiresAdminFactAttribute : FactAttribute
+{
+    public RequiresAdminFactAttribute()
+    {
+        if (!AclHelper.IsRunningAsAdmin())
+            Skip = "Requires an elevated Windows administrator token.";
     }
 }

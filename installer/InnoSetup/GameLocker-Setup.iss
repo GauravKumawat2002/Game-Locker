@@ -84,8 +84,8 @@ Filename: "sc.exe"; Parameters: "config GameLockerService binPath= ""{app}\Servi
 Filename: "sc.exe"; Parameters: "description GameLockerService ""Automatically locks and unlocks game folders based on configured schedules."""; Flags: runhidden waituntilterminated
 Filename: "sc.exe"; Parameters: "failure GameLockerService reset= 30 actions= restart/5000/restart/10000/restart/15000"; Flags: runhidden waituntilterminated
 Filename: "sc.exe"; Parameters: "start GameLockerService"; Flags: runhidden waituntilterminated; Tasks: startservice
-; Launch Config UI after install
-Filename: "{app}\ConfigUI\{#MyAppConfigExeName}"; Description: "{cm:LaunchProgram,{#StringChange(MyAppName, '&', '&&')} Configuration}"; Flags: nowait postinstall skipifsilent
+; Launch Config UI with Setup's elevated token.
+Filename: "{app}\ConfigUI\{#MyAppConfigExeName}"; Description: "{cm:LaunchProgram,{#StringChange(MyAppName, '&', '&&')} Configuration}"; Flags: nowait postinstall runascurrentuser skipifsilent
 
 [UninstallDelete]
 Type: filesandordirs; Name: "{app}\Logs"

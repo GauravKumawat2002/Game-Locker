@@ -36,9 +36,6 @@ public class FolderLocker
 
     private async Task LoadVaultKeysAsync(bool create)
     {
-        if (_masterKey is not null && _masterIV is not null)
-            return;
-
         // Multiple folder operations can start with a single, shared key directory.
         using var operation = _stateStore.BeginOperation(_keyStorePath);
         var keyPath = Path.Combine(_keyStorePath, "folder_key.dat");
@@ -50,6 +47,15 @@ public class FolderLocker
 
         if (!hasKey && !hasIv && create)
         {
+            var hasUnreadableJournal = false;
+            var records = _stateStore.LoadAll(_ => hasUnreadableJournal = true);
+            if (hasUnreadableJournal || records.Any(record => record.VaultFiles.Count > 0))
+            {
+                throw new InvalidDataException(
+                    "Vault keys are missing and a lock journal contains pending vault files or could not be read. " +
+                    "Restore the original vault keys before encrypting more files.");
+            }
+
             Directory.CreateDirectory(_keyStorePath);
             await DpapiHelper.ProtectToFileAsync(AesEncryptionHelper.GenerateKey(), keyPath);
             await DpapiHelper.ProtectToFileAsync(AesEncryptionHelper.GenerateIV(), ivPath);
@@ -458,6 +464,7 @@ public class FolderLocker
 
     private async Task RestoreVaultFilesAsync(FolderStateRecord record, List<string> failures)
     {
+        Task? loadKeys = null;
         foreach (var relativePath in record.VaultFiles.ToArray())
         {
             try
@@ -468,7 +475,7 @@ public class FolderLocker
 
                 if (File.Exists(encryptedPath))
                 {
-                    await LoadVaultKeysAsync(create: false);
+                    await (loadKeys ??= LoadVaultKeysAsync(create: false));
                     record.VaultCiphertextHashes.TryGetValue(relativePath, out var expectedHash);
                     RestoreFile(encryptedPath, expectedHash);
                 }

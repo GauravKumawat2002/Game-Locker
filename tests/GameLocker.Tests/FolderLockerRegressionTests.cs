@@ -221,6 +221,59 @@ public sealed class FolderLockerRegressionTests : IDisposable
         Assert.Contains("conflicting", _store.TryLoad(_game)!.LastError);
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task MissingVaultKeysAreNotReplacedWhileAnotherFolderHasPendingFiles(bool cachedKeys)
+    {
+        if (cachedKeys)
+        {
+            await _locker.InitializeAsync();
+            File.Delete(Path.Combine(_keys, "folder_key.dat"));
+            File.Delete(Path.Combine(_keys, "folder_iv.dat"));
+        }
+
+        var earlierFolder = Directory.CreateDirectory(Path.Combine(_root, "earlier game")).FullName;
+        _store.Save(new FolderStateRecord
+        {
+            FolderPath = earlierFolder,
+            Mode = LockMode.AclAndVault,
+            VaultFiles = ["earlier.sav"],
+        });
+        var earlierCiphertext = Path.Combine(earlierFolder, "earlier.sav.enc");
+        File.WriteAllText(earlierCiphertext, "previous ciphertext fixture");
+        var original = Path.Combine(_game, "new.sav");
+        File.WriteAllText(original, "new save fixture");
+
+        Assert.Empty(await _locker.EncryptFolderWithCustomExtensionsAsync(_game, SaveFiles()));
+
+        Assert.False(File.Exists(Path.Combine(_keys, "folder_key.dat")));
+        Assert.False(File.Exists(Path.Combine(_keys, "folder_iv.dat")));
+        Assert.Equal("previous ciphertext fixture", File.ReadAllText(earlierCiphertext));
+        Assert.Equal("new save fixture", File.ReadAllText(original));
+        Assert.False(File.Exists(original + ".enc"));
+        Assert.Contains("Restore the original vault keys", _store.TryLoad(_game)!.LastError);
+    }
+
+    [Fact]
+    public async Task MissingVaultKeysAreNotReplacedWhileAnotherJournalIsUnreadable()
+    {
+        var earlierFolder = Directory.CreateDirectory(Path.Combine(_root, "earlier game")).FullName;
+        Directory.CreateDirectory(_store.StateDirectory);
+        var unreadableJournal = _store.GetRecordPath(earlierFolder);
+        File.WriteAllText(unreadableJournal, "{ incomplete");
+        var original = Path.Combine(_game, "new.sav");
+        File.WriteAllText(original, "new save fixture");
+
+        Assert.Empty(await _locker.EncryptFolderWithCustomExtensionsAsync(_game, SaveFiles()));
+
+        Assert.False(Directory.Exists(_keys));
+        Assert.Equal("{ incomplete", File.ReadAllText(unreadableJournal));
+        Assert.Equal("new save fixture", File.ReadAllText(original));
+        Assert.False(File.Exists(original + ".enc"));
+        Assert.Contains("Restore the original vault keys", _store.TryLoad(_game)!.LastError);
+    }
+
     [Fact]
     public async Task VaultRecoveryAfterRestartRestoresMatchingHashesAndKeepsUnselectedFiles()
     {
