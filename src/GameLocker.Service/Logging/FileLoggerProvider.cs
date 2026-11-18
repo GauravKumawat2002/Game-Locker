@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Text;
 
 namespace GameLocker.Service.Logging;
@@ -15,7 +16,7 @@ public sealed class FileLoggerOptions
     /// <summary>The size at which the current file is rotated.</summary>
     public long FileSizeLimitBytes { get; set; } = 5 * 1024 * 1024;
 
-    /// <summary>How many rotated files to keep alongside the current one.</summary>
+    /// <summary>How many rotated files to keep alongside the current one. Zero keeps none.</summary>
     public int RetainedFileCount { get; set; } = 3;
 
     /// <summary>The lowest level written to the file.</summary>
@@ -37,9 +38,10 @@ public sealed class FileLoggerOptions
 [ProviderAlias("File")]
 public sealed class FileLoggerProvider : ILoggerProvider
 {
+    private static readonly TimeSpan RetryDelay = TimeSpan.FromSeconds(5);
     private readonly FileLoggerOptions _options;
     private readonly object _gate = new();
-    private bool _disabled;
+    private long? _lastWriteFailure;
 
     /// <summary>
     /// Creates a provider.
@@ -58,13 +60,13 @@ public sealed class FileLoggerProvider : ILoggerProvider
     {
     }
 
-    private bool IsEnabled(LogLevel level) => !_disabled && level >= _options.MinimumLevel;
+    private bool IsEnabled(LogLevel level) => level != LogLevel.None && level >= _options.MinimumLevel;
 
     private void Write(string line)
     {
         lock (_gate)
         {
-            if (_disabled)
+            if (_lastWriteFailure is long failure && Stopwatch.GetElapsedTime(failure) < RetryDelay)
                 return;
 
             try
@@ -77,13 +79,13 @@ public sealed class FileLoggerProvider : ILoggerProvider
                 RotateIfNeeded();
 
                 File.AppendAllText(_options.Path, line + Environment.NewLine, Encoding.UTF8);
+                _lastWriteFailure = null;
             }
             catch
             {
-                // Logging must never take the service down. If the file cannot be written - the
-                // disk is full, the path is denied - stop trying rather than throwing on every
-                // entry. The Event Log provider is still attached.
-                _disabled = true;
+                // Throttle retries so temporary disk or sharing failures can clear without
+                // repeatedly blocking the service's logging calls.
+                _lastWriteFailure = Stopwatch.GetTimestamp();
             }
         }
     }
@@ -94,6 +96,12 @@ public sealed class FileLoggerProvider : ILoggerProvider
 
         if (!current.Exists || current.Length < _options.FileSizeLimitBytes)
             return;
+
+        if (_options.RetainedFileCount <= 0)
+        {
+            current.Delete();
+            return;
+        }
 
         // service.log -> service.1.log -> service.2.log, oldest discarded.
         var directory = current.DirectoryName ?? string.Empty;

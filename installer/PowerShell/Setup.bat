@@ -21,8 +21,9 @@ cd /d "%~dp0"
 echo Starting GameLocker installation...
 echo.
 powershell.exe -ExecutionPolicy Bypass -File "GameLocker-Setup.ps1"
+set "setupResult=%errorLevel%"
 
-if %errorLevel% equ 0 (
+if %setupResult% equ 0 (
     echo.
     echo Installation completed successfully!
 ) else (
@@ -31,3 +32,4 @@ if %errorLevel% equ 0 (
 )
 
 pause
+exit /b %setupResult%

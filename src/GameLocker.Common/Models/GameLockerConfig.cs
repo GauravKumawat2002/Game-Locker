@@ -148,15 +148,28 @@ public class GameLockerConfig
     /// <returns>The next DateTime when gaming will be locked, or null if no schedule.</returns>
     public DateTime? GetNextLockTime(DateTime currentTime)
     {
-        // The end of the window currently in progress. Returns null when no window is open, which
-        // callers treat as "already locked".
+        if (DurationHours >= 24 && AllowedDays.Distinct().Count() == 7)
+            return null;
+
+        DateTime? lockTime = null;
         foreach (var (start, end) in GetWindows(currentTime))
         {
-            if (currentTime >= start && currentTime < end)
-                return end;
+            if (lockTime is null)
+            {
+                if (currentTime >= start && currentTime < end)
+                    lockTime = end;
+            }
+            else if (start > lockTime)
+            {
+                break;
+            }
+            else if (end > lockTime)
+            {
+                lockTime = end;
+            }
         }
 
-        return null;
+        return lockTime;
     }
 
     /// <summary>

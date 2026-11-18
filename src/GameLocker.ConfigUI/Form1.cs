@@ -2,801 +2,438 @@ using GameLocker.Common.Configuration;
 using GameLocker.Common.Models;
 using GameLocker.Common.Security;
 using GameLocker.Common.Services;
-using System.ServiceProcess;
 
 namespace GameLocker.ConfigUI;
 
 public partial class Form1 : Form
 {
-    private readonly ConfigManager _configManager;
-    private readonly FileExtensionScanner _extensionScanner;
-    private GameLockerConfig _config;
-    
-    // Extension selection for each folder
-    private Dictionary<string, FolderEncryptionSettings> _folderSettings = new();
+    private readonly ConfigManager _configManager = new();
+    private readonly FileExtensionScanner _extensionScanner = new();
+    private readonly Dictionary<string, FolderEncryptionSettings> _folderSettings = new(StringComparer.OrdinalIgnoreCase);
+    private GameLockerConfig _config = new();
+    private bool _canEdit;
+    private bool _saving;
+    private bool _populatingExtensions;
+    private int _scanVersion;
 
     public Form1()
     {
         InitializeComponent();
-        _configManager = new ConfigManager();
-        _extensionScanner = new FileExtensionScanner();
-        _config = new GameLockerConfig();
+        UpdateEditControls();
+        ResetExtensions();
     }
 
     private async void Form1_Load(object sender, EventArgs e)
     {
-        // Check for admin privileges
-        if (!AclHelper.IsRunningAsAdmin())
-        {
-            MessageBox.Show(
-                "GameLocker ConfigUI should be run as Administrator for full functionality.\n\n" +
-                "Some features may not work correctly without admin privileges.",
-                "Administrator Recommended",
-                MessageBoxButtons.OK,
-                MessageBoxIcon.Warning);
-        }
+        var result = await _configManager.LoadConfigResultAsync();
+        if (IsDisposed)
+            return;
 
-        // Load existing configuration
-        await LoadConfigurationAsync();
-    }
+        var isAdministrator = AclHelper.IsRunningAsAdmin();
+        _canEdit = isAdministrator && !result.IsDamaged;
 
-    private async Task LoadConfigurationAsync()
-    {
-        try
+        if (result.IsLoaded)
+            _config = result.Config!;
+
+        PopulateFormFromConfig();
+        UpdateEditControls();
+
+        if (!isAdministrator)
         {
-            var existingConfig = await _configManager.LoadConfigAsync();
-            if (existingConfig != null)
-            {
-                _config = existingConfig;
-                
-                // Load folder settings into local dictionary
-                _folderSettings.Clear();
-                foreach (var settings in _config.FolderEncryptionSettings)
-                {
-                    _folderSettings[settings.FolderPath] = settings;
-                }
-                
-                PopulateFormFromConfig();
-                ShowStatus("Configuration loaded successfully.", false);
-            }
-            else
-            {
-                ShowStatus("No existing configuration found. Configure your settings.", false);
-            }
+            ShowStatus("Run as administrator to change settings.", true);
         }
-        catch (Exception ex)
+        else if (result.IsDamaged)
         {
-            ShowStatus($"Error loading configuration: {ex.Message}", true);
+            ShowError("Configuration unavailable", $"Restore the saved configuration before making changes.\n\n{result.Error}");
+        }
+        else if (result.IsLoaded)
+        {
+            ShowStatus("Configuration loaded.");
+        }
+        else
+        {
+            ShowStatus("Choose your schedule and add a game folder.");
         }
     }
 
     private void PopulateFormFromConfig()
     {
-        // Populate days checkboxes
-        chkSunday.Checked = _config.AllowedDays.Contains(DayOfWeek.Sunday);
-        chkMonday.Checked = _config.AllowedDays.Contains(DayOfWeek.Monday);
-        chkTuesday.Checked = _config.AllowedDays.Contains(DayOfWeek.Tuesday);
-        chkWednesday.Checked = _config.AllowedDays.Contains(DayOfWeek.Wednesday);
-        chkThursday.Checked = _config.AllowedDays.Contains(DayOfWeek.Thursday);
-        chkFriday.Checked = _config.AllowedDays.Contains(DayOfWeek.Friday);
-        chkSaturday.Checked = _config.AllowedDays.Contains(DayOfWeek.Saturday);
+        for (var index = 0; index < DayCheckboxes.Length; index++)
+            DayCheckboxes[index].Checked = _config.AllowedDays.Contains((DayOfWeek)index);
 
-        // Populate time settings
         dtpStartTime.Value = DateTime.Today.Add(_config.StartTime.ToTimeSpan());
         nudDuration.Value = _config.DurationHours;
-
-        // Populate folder list
-        lstFolders.Items.Clear();
-        foreach (var folder in _config.GameFolderPaths)
-        {
-            lstFolders.Items.Add(folder);
-        }
-
-        // Populate other settings
         chkNotifications.Checked = _config.NotificationsEnabled;
-        nudPollingInterval.Value = _config.PollingIntervalMinutes;
-        
-        // Clear extension list until a folder is selected
-        clbExtensions.Items.Clear();
-        lblExtensionInfo.Text = "Select a folder to view file types";
+        chkVault.Checked = _config.LockMode == LockMode.AclAndVault;
+
+        _folderSettings.Clear();
+        foreach (var settings in _config.FolderEncryptionSettings)
+            _folderSettings[settings.FolderPath] = settings;
+
+        lstFolders.Items.Clear();
+        foreach (var path in _config.GameFolderPaths)
+            lstFolders.Items.Add(path);
+
+        ResetExtensions();
     }
 
-    private void PopulateConfigFromForm()
+    private CheckBox[] DayCheckboxes =>
+        [chkSunday, chkMonday, chkTuesday, chkWednesday, chkThursday, chkFriday, chkSaturday];
+
+    private void UpdateEditControls()
     {
-        _config.AllowedDays.Clear();
-        
-        if (chkSunday.Checked) _config.AllowedDays.Add(DayOfWeek.Sunday);
-        if (chkMonday.Checked) _config.AllowedDays.Add(DayOfWeek.Monday);
-        if (chkTuesday.Checked) _config.AllowedDays.Add(DayOfWeek.Tuesday);
-        if (chkWednesday.Checked) _config.AllowedDays.Add(DayOfWeek.Wednesday);
-        if (chkThursday.Checked) _config.AllowedDays.Add(DayOfWeek.Thursday);
-        if (chkFriday.Checked) _config.AllowedDays.Add(DayOfWeek.Friday);
-        if (chkSaturday.Checked) _config.AllowedDays.Add(DayOfWeek.Saturday);
-
-        _config.StartTime = TimeOnly.FromDateTime(dtpStartTime.Value);
-        _config.DurationHours = (int)nudDuration.Value;
-
-        _config.GameFolderPaths.Clear();
-        foreach (string folder in lstFolders.Items)
-        {
-            _config.GameFolderPaths.Add(folder);
-        }
-
-        _config.NotificationsEnabled = chkNotifications.Checked;
-        _config.PollingIntervalMinutes = (int)nudPollingInterval.Value;
-        
-        // Save folder encryption settings
-        _config.FolderEncryptionSettings.Clear();
-        foreach (var kvp in _folderSettings)
-        {
-            _config.FolderEncryptionSettings.Add(kvp.Value);
-        }
+        var enabled = _canEdit && !_saving;
+        grpDays.Enabled = enabled;
+        grpTime.Enabled = enabled;
+        grpFolders.Enabled = enabled;
+        grpSettings.Enabled = enabled;
+        grpExtensions.Enabled = enabled && chkVault.Checked;
+        btnSave.Enabled = enabled;
+        btnClear.Enabled = enabled;
     }
 
     private void btnAddFolder_Click(object sender, EventArgs e)
     {
         using var dialog = new FolderBrowserDialog
         {
-            Description = "Select a game folder to lock",
+            Description = "Select a game folder",
             UseDescriptionForTitle = true,
-            ShowNewFolderButton = false
+            ShowNewFolderButton = false,
         };
 
-        if (dialog.ShowDialog() == DialogResult.OK)
+        if (dialog.ShowDialog(this) != DialogResult.OK)
+            return;
+
+        if (!PathGuard.TryValidate(dialog.SelectedPath, out var guard))
         {
-            if (!lstFolders.Items.Contains(dialog.SelectedPath))
-            {
-                lstFolders.Items.Add(dialog.SelectedPath);
-                
-                // Create default settings for this folder
-                var settings = new FolderEncryptionSettings
-                {
-                    FolderPath = dialog.SelectedPath,
-                    SelectedExtensions = new List<string>()
-                };
-                _folderSettings[dialog.SelectedPath] = settings;
-                
-                // Auto-select the newly added folder
-                lstFolders.SelectedItem = dialog.SelectedPath;
-                
-                // No immediate lock command is sent here. The folder is not in the saved
-                // configuration yet, and the service now refuses commands for folders it does not
-                // manage - see ARCHITECTURE-REVIEW.md finding [V-1]. Clicking Save writes the
-                // configuration and signals the service, which then applies the correct state.
-                ShowStatus(
-                    $"Added folder: {dialog.SelectedPath}. Click Save to apply it to the schedule.",
-                    false);
-            }
-            else
-            {
-                ShowStatus("Folder already in list.", true);
-            }
+            ShowError("Folder unavailable", guard.Message);
+            return;
         }
+
+        if (lstFolders.Items.Cast<string>().Any(path =>
+            PathGuard.IsAtOrUnder(path, guard.Path) || PathGuard.IsAtOrUnder(guard.Path, path)))
+        {
+            ShowStatus("Choose a folder outside existing monitored folders.", true);
+            return;
+        }
+
+        lstFolders.Items.Add(guard.Path);
+        lstFolders.SelectedItem = guard.Path;
+        ShowStatus("Folder added. Save to apply your changes.");
     }
 
-    private async void btnRemoveFolder_Click(object sender, EventArgs e)
+    private void btnRemoveFolder_Click(object sender, EventArgs e)
     {
-        if (lstFolders.SelectedIndex >= 0)
-        {
-            var removed = lstFolders.SelectedItem?.ToString();
-            if (!string.IsNullOrEmpty(removed))
-            {
-                var result = MessageBox.Show(
-                    $"Are you sure you want to remove '{removed}' from GameLocker?\n\n" +
-                    "This will decrypt all files in the folder and restore normal access permissions.\n" +
-                    "The decryption process may take some time depending on the number and size of files.",
-                    "Remove Folder",
-                    MessageBoxButtons.YesNo,
-                    MessageBoxIcon.Question);
-
-                if (result == DialogResult.Yes)
-                {
-                    await DecryptAndRemoveFolderAsync(removed);
-                }
-            }
-        }
-        else
+        if (lstFolders.SelectedItem is not string folder)
         {
             ShowStatus("Select a folder to remove.", true);
+            return;
         }
+
+        _folderSettings.Remove(folder);
+        lstFolders.Items.Remove(folder);
+        ShowStatus("Folder removed from the list. Save to restore its access.");
     }
-    
-    /// <summary>
-    /// Decrypts all files in a folder and removes it from the configuration.
-    /// Shows a progress dialog with live updates.
-    /// </summary>
-    private async Task DecryptAndRemoveFolderAsync(string folderPath)
+
+    private void lstFolders_SelectedIndexChanged(object sender, EventArgs e) => ResetExtensions();
+
+    private void chkVault_CheckedChanged(object sender, EventArgs e)
     {
-        // Create a progress form
-        var progressForm = new Form
-        {
-            Text = "Decrypting Files",
-            Width = 550,
-            Height = 220,
-            StartPosition = FormStartPosition.CenterScreen,
-            FormBorderStyle = FormBorderStyle.FixedDialog,
-            MaximizeBox = false,
-            MinimizeBox = false,
-            ControlBox = false,
-            TopMost = true
-        };
-        
-        var lblProgress = new Label
-        {
-            Text = "Initializing decryption...",
-            Location = new Point(20, 20),
-            Size = new Size(500, 25),
-            AutoSize = false,
-            Font = new Font(SystemFonts.DefaultFont.FontFamily, 10, FontStyle.Bold)
-        };
-        
-        var progressBar = new ProgressBar
-        {
-            Location = new Point(20, 50),
-            Size = new Size(500, 30),
-            Style = ProgressBarStyle.Continuous
-        };
-        
-        var lblFile = new Label
-        {
-            Text = "Please wait...",
-            Location = new Point(20, 90),
-            Size = new Size(500, 45),
-            AutoSize = false
-        };
-        
-        var btnClose = new Button
-        {
-            Text = "Close",
-            Location = new Point(225, 145),
-            Size = new Size(100, 35),
-            Enabled = false
-        };
-        
-        bool completed = false;
-        string folderToRemove = folderPath;
-        
-        btnClose.Click += (s, e) => { 
-            if (completed) 
-            {
-                progressForm.DialogResult = DialogResult.OK;
-                progressForm.Close();
-            }
-        };
-        
-        progressForm.Controls.AddRange(new Control[] { lblProgress, progressBar, lblFile, btnClose });
-        
-        // Run the decryption in a background task while showing the form
-        _ = Task.Run(async () =>
-        {
-            try
-            {
-                // Initialize FolderLocker
-                string keyStorePath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "GameLocker");
-                var folderLocker = new FolderLocker(keyStorePath);
-                
-                progressForm.Invoke(() => {
-                    lblProgress.Text = "Loading encryption keys...";
-                    lblFile.Text = "Initializing...";
-                });
-                
-                await folderLocker.InitializeAsync();
-                
-                // First, restore ACL permissions
-                progressForm.Invoke(() => {
-                    lblProgress.Text = "Restoring folder permissions...";
-                    lblFile.Text = "Removing access restrictions...";
-                });
-                
-                try
-                {
-                    AclHelper.AllowAccess(folderPath);
-                }
-                catch (Exception ex)
-                {
-                    progressForm.Invoke(() => lblFile.Text = $"ACL warning: {ex.Message}");
-                }
-                
-                // Find all encrypted files (including hidden files)
-                progressForm.Invoke(() => {
-                    lblProgress.Text = "Scanning for encrypted files...";
-                    lblFile.Text = "Looking for .enc files...";
-                });
-                
-                // Use DirectoryInfo to get hidden files too
-                var dirInfo = new DirectoryInfo(folderPath);
-                var encryptedFiles = dirInfo.GetFiles("*.enc", SearchOption.AllDirectories)
-                    .Select(f => f.FullName)
-                    .ToArray();
-                int totalFiles = encryptedFiles.Length;
-                
-                if (totalFiles == 0)
-                {
-                    progressForm.Invoke(() => {
-                        lblProgress.Text = "No encrypted files found.";
-                        lblFile.Text = "Folder was not encrypted or already decrypted.";
-                        progressBar.Style = ProgressBarStyle.Continuous;
-                        progressBar.Value = 100;
-                    });
-                }
-                else
-                {
-                    progressForm.Invoke(() => {
-                        progressBar.Maximum = totalFiles;
-                        progressBar.Value = 0;
-                    });
-                    
-                    int decrypted = 0;
-                    int failed = 0;
-                    
-                    foreach (var encFile in encryptedFiles)
-                    {
-                        try
-                        {
-                            string fileName = Path.GetFileName(encFile);
-                            progressForm.Invoke(() => {
-                                lblProgress.Text = $"Decrypting file {decrypted + failed + 1} of {totalFiles}...";
-                                lblFile.Text = fileName.Length > 60 ? fileName.Substring(0, 57) + "..." : fileName;
-                            });
-                            
-                            // Unhide the file first if it's hidden
-                            var fileInfo = new FileInfo(encFile);
-                            if ((fileInfo.Attributes & FileAttributes.Hidden) == FileAttributes.Hidden)
-                            {
-                                fileInfo.Attributes &= ~FileAttributes.Hidden;
-                            }
-                            
-                            // Decrypt using FolderLocker's public method
-                            await folderLocker.DecryptSingleFileAsync(encFile);
-                            decrypted++;
-                        }
-                        catch (Exception ex)
-                        {
-                            failed++;
-                            Console.WriteLine($"Failed to decrypt {encFile}: {ex.Message}");
-                        }
-                        
-                        int currentProgress = decrypted + failed;
-                        progressForm.Invoke(() => progressBar.Value = currentProgress);
-                    }
-                    
-                    progressForm.Invoke(() => {
-                        if (failed == 0)
-                            lblProgress.Text = $"✓ Successfully decrypted {decrypted} files!";
-                        else
-                            lblProgress.Text = $"Decryption complete: {decrypted} OK, {failed} failed.";
-                    });
-                }
-                
-                // Remove lock marker
-                var markerPath = Path.Combine(folderPath, ".gamelocker");
-                if (File.Exists(markerPath))
-                {
-                    try 
-                    { 
-                        var markerInfo = new FileInfo(markerPath);
-                        markerInfo.Attributes &= ~FileAttributes.Hidden;
-                        File.Delete(markerPath); 
-                    } 
-                    catch { }
-                }
-                
-                progressForm.Invoke(() => {
-                    lblFile.Text = "✓ Folder removed from GameLocker successfully!";
-                    completed = true;
-                    btnClose.Enabled = true;
-                    btnClose.Focus();
-                });
-            }
-            catch (Exception ex)
-            {
-                progressForm.Invoke(() => {
-                    lblProgress.Text = "Error during decryption";
-                    lblFile.Text = ex.Message;
-                    completed = true;
-                    btnClose.Enabled = true;
-                });
-            }
-        });
-        
-        // Show the form modally
-        progressForm.ShowDialog(this);
-        progressForm.Dispose();
-        
-        // After dialog closes, update UI
-        _folderSettings.Remove(folderToRemove);
-        if (lstFolders.Items.Contains(folderToRemove))
-            lstFolders.Items.Remove(folderToRemove);
+        UpdateEditControls();
+        ResetExtensions();
+    }
+
+    private void ResetExtensions()
+    {
+        _scanVersion++;
+        clbExtensions.Tag = null;
         clbExtensions.Items.Clear();
-        lblExtensionInfo.Text = "Select a folder to view file types";
-        ShowStatus($"Folder removed and files decrypted: {folderToRemove}", false);
+        lblExtensionInfo.Text = !chkVault.Checked
+            ? "Vault encryption is off. GameLocker uses folder permissions."
+            : lstFolders.SelectedItem is string
+                ? "Click Scan file types to choose files for the vault."
+                : "Select a folder to choose files for the vault.";
+        UpdateScanControls();
     }
-    
-    private void lstFolders_SelectedIndexChanged(object sender, EventArgs e)
+
+    private void UpdateScanControls()
     {
-        if (lstFolders.SelectedIndex >= 0)
-        {
-            var selectedFolder = lstFolders.SelectedItem?.ToString();
-            if (!string.IsNullOrEmpty(selectedFolder))
-            {
-                ScanAndDisplayExtensions(selectedFolder);
-            }
-        }
-        else
-        {
-            clbExtensions.Items.Clear();
-            lblExtensionInfo.Text = "Select a folder to view file types";
-        }
+        btnRescan.Enabled = lstFolders.SelectedItem is string;
+        var scanned = clbExtensions.Tag is List<ExtensionInfo>;
+        clbExtensions.Enabled = scanned;
+        btnSelectSafe.Enabled = scanned;
+        btnSelectNone.Enabled = scanned;
     }
-    
-    private void ScanAndDisplayExtensions(string folderPath)
+
+    private async void btnRescan_Click(object sender, EventArgs e)
     {
+        if (!chkVault.Checked || lstFolders.SelectedItem is not string folder)
+            return;
+
+        ResetExtensions();
+        var version = _scanVersion;
+        lblExtensionInfo.Text = "Scanning file types…";
+        btnRescan.Enabled = false;
+        var result = await Task.Run(() => _extensionScanner.ScanFolderExtensions(folder));
+
+        if (IsDisposed || version != _scanVersion)
+            return;
+
+        btnRescan.Enabled = true;
+        if (!string.IsNullOrEmpty(result.ErrorMessage))
+        {
+            lblExtensionInfo.Text = "Scan unavailable. Check the folder is unlocked and try again.";
+            ShowError("Scan failed", result.ErrorMessage);
+            return;
+        }
+
+        var extensions = result.GetExtensionsByRisk()
+            .Where(extension => !FileExtensionScanner.IsNeverEncryptable("file" + extension.Extension) &&
+                extension.Extension != ".enc")
+            .ToList();
+        var settings = GetFolderSettings(folder);
+        _populatingExtensions = true;
+        clbExtensions.BeginUpdate();
         try
         {
-            clbExtensions.Items.Clear();
-            lblExtensionInfo.Text = "Scanning folder...";
-            Application.DoEvents();
-            
-            var result = _extensionScanner.ScanFolderExtensions(folderPath);
-            
-            if (!string.IsNullOrEmpty(result.ErrorMessage))
-            {
-                lblExtensionInfo.Text = $"Error: {result.ErrorMessage}";
-                return;
-            }
-            
-            // Get or create settings for this folder
-            if (!_folderSettings.ContainsKey(folderPath))
-            {
-                _folderSettings[folderPath] = new FolderEncryptionSettings
-                {
-                    FolderPath = folderPath,
-                    SelectedExtensions = new List<string>()
-                };
-            }
-            var settings = _folderSettings[folderPath];
-            
-            // Get extensions sorted by risk level
-            var extensions = result.GetExtensionsByRisk();
-            
-            foreach (var ext in extensions)
-            {
-                // Format: ".ext (10 files, 1.5 MB) - SAFE"
-                string riskText = ext.RiskLevel.ToString().ToUpper();
-                string displayText = $"{ext.Extension} ({ext.FileCount} files, {ext.FormattedSize}) - {riskText}";
-                
-                int index = clbExtensions.Items.Add(displayText);
-                
-                // Check if this extension is already selected in settings
-                // Default to checking SAFE extensions
-                bool shouldCheck = settings.SelectedExtensions.Contains(ext.Extension) ||
-                    (settings.SelectedExtensions.Count == 0 && ext.RiskLevel == RiskLevel.Safe);
-                    
-                clbExtensions.SetItemChecked(index, shouldCheck);
-            }
-            
-            lblExtensionInfo.Text = $"Found {result.TotalFilesFound} files, {result.UniqueExtensions} types. Check extensions to encrypt.";
-            
-            // Store extension info for later use
             clbExtensions.Tag = extensions;
+            foreach (var extension in extensions)
+            {
+                var selected = settings.UseCustomSelection &&
+                    settings.SelectedExtensions.Contains(extension.Extension, StringComparer.OrdinalIgnoreCase);
+                clbExtensions.Items.Add(
+                    $"{extension.Extension} ({extension.FileCount} files, {extension.FormattedSize}) · {extension.RiskLevel}",
+                    selected);
+            }
         }
-        catch (Exception ex)
+        finally
         {
-            lblExtensionInfo.Text = $"Error: {ex.Message}";
+            clbExtensions.EndUpdate();
+            _populatingExtensions = false;
         }
+
+        lblExtensionInfo.Text = extensions.Count == 0
+            ? "This folder has no file types eligible for the vault."
+            : "Check the file types to encrypt during a lock.";
+        UpdateScanControls();
     }
-    
+
+    private FolderEncryptionSettings GetFolderSettings(string path)
+    {
+        if (!_folderSettings.TryGetValue(path, out var settings))
+        {
+            settings = new FolderEncryptionSettings { FolderPath = path };
+            _folderSettings.Add(path, settings);
+        }
+
+        return settings;
+    }
+
     private void clbExtensions_ItemCheck(object sender, ItemCheckEventArgs e)
     {
-        // Get the selected folder
-        if (lstFolders.SelectedIndex < 0) return;
-        var folderPath = lstFolders.SelectedItem?.ToString();
-        if (string.IsNullOrEmpty(folderPath)) return;
-        
-        // Get extension info from tag
-        var extensions = clbExtensions.Tag as List<ExtensionInfo>;
-        if (extensions == null || e.Index >= extensions.Count) return;
-        
-        var ext = extensions[e.Index];
-        
-        // Warn about dangerous extensions
-        if (e.NewValue == CheckState.Checked && ext.RiskLevel == RiskLevel.Dangerous)
+        if (_populatingExtensions || lstFolders.SelectedItem is not string path ||
+            clbExtensions.Tag is not List<ExtensionInfo> extensions)
         {
-            var result = MessageBox.Show(
-                $"⚠️ WARNING: Encrypting '{ext.Extension}' files is DANGEROUS!\n\n" +
-                "This can cause:\n" +
-                "• Game crashes on startup\n" +
-                "• Corrupted game files\n" +
-                "• Inability to play until decrypted\n\n" +
-                $"Examples: {ext.ExampleFilesList}\n\n" +
-                "Are you SURE you want to encrypt these files?",
-                "Dangerous File Type",
-                MessageBoxButtons.YesNo,
-                MessageBoxIcon.Warning);
-                
-            if (result != DialogResult.Yes)
-            {
-                e.NewValue = CheckState.Unchecked;
-                return;
-            }
+            return;
         }
-        
-        // Update folder settings - use BeginInvoke to update after the check state changes
-        BeginInvoke(new Action(() => UpdateFolderSettings(folderPath)));
+
+        var settings = GetFolderSettings(path);
+        var extension = extensions[e.Index].Extension;
+        settings.UseCustomSelection = true;
+        settings.SelectedExtensions.RemoveAll(selected => selected.Equals(extension, StringComparison.OrdinalIgnoreCase));
+        if (e.NewValue == CheckState.Checked)
+            settings.SelectedExtensions.Add(extension);
     }
-    
-    private void UpdateFolderSettings(string folderPath)
-    {
-        if (!_folderSettings.ContainsKey(folderPath)) return;
-        
-        var settings = _folderSettings[folderPath];
-        var extensions = clbExtensions.Tag as List<ExtensionInfo>;
-        if (extensions == null) return;
-        
-        settings.SelectedExtensions.Clear();
-        
-        for (int i = 0; i < clbExtensions.Items.Count && i < extensions.Count; i++)
-        {
-            if (clbExtensions.GetItemChecked(i))
-            {
-                settings.SelectedExtensions.Add(extensions[i].Extension);
-            }
-        }
-    }
-    
+
     private void btnSelectSafe_Click(object sender, EventArgs e)
     {
-        var extensions = clbExtensions.Tag as List<ExtensionInfo>;
-        if (extensions == null) return;
-        
-        for (int i = 0; i < clbExtensions.Items.Count && i < extensions.Count; i++)
-        {
-            clbExtensions.SetItemChecked(i, extensions[i].RiskLevel == RiskLevel.Safe);
-        }
-        
-        if (lstFolders.SelectedIndex >= 0)
-        {
-            var folderPath = lstFolders.SelectedItem?.ToString();
-            if (!string.IsNullOrEmpty(folderPath))
-            {
-                UpdateFolderSettings(folderPath);
-            }
-        }
-        
-        ShowStatus("Selected only SAFE file types (saves, configs, text files)", false);
+        if (lstFolders.SelectedItem is not string path || clbExtensions.Tag is not List<ExtensionInfo> extensions)
+            return;
+
+        SelectExtensions(path, extensions, extension => extension.RiskLevel == RiskLevel.Safe);
+        ShowStatus("Selected eligible save-file types.");
     }
-    
+
     private void btnSelectNone_Click(object sender, EventArgs e)
     {
-        for (int i = 0; i < clbExtensions.Items.Count; i++)
-        {
-            clbExtensions.SetItemChecked(i, false);
-        }
-        
-        if (lstFolders.SelectedIndex >= 0)
-        {
-            var folderPath = lstFolders.SelectedItem?.ToString();
-            if (!string.IsNullOrEmpty(folderPath))
-            {
-                UpdateFolderSettings(folderPath);
-            }
-        }
-        
-        ShowStatus("Cleared all selections", false);
+        if (lstFolders.SelectedItem is not string path || clbExtensions.Tag is not List<ExtensionInfo> extensions)
+            return;
+
+        SelectExtensions(path, extensions, _ => false);
+        ShowStatus("File type selections cleared.");
     }
-    
-    private void btnRescan_Click(object sender, EventArgs e)
+
+    private void SelectExtensions(string path, List<ExtensionInfo> extensions, Func<ExtensionInfo, bool> select)
     {
-        if (lstFolders.SelectedIndex >= 0)
+        var settings = GetFolderSettings(path);
+        settings.UseCustomSelection = true;
+        settings.SelectedExtensions.Clear();
+
+        for (var index = 0; index < extensions.Count; index++)
         {
-            var selectedFolder = lstFolders.SelectedItem?.ToString();
-            if (!string.IsNullOrEmpty(selectedFolder))
-            {
-                ScanAndDisplayExtensions(selectedFolder);
-                ShowStatus("Folder rescanned", false);
-            }
-        }
-        else
-        {
-            ShowStatus("Select a folder to scan", true);
+            var extension = extensions[index];
+            var selected = select(extension);
+            clbExtensions.SetItemChecked(index, selected);
+            if (selected && !settings.SelectedExtensions.Contains(extension.Extension))
+                settings.SelectedExtensions.Add(extension.Extension);
         }
     }
 
     private async void btnSave_Click(object sender, EventArgs e)
     {
-        if (!ValidateInputs())
-            return;
+        var days = DayCheckboxes.Select((checkbox, index) => (checkbox, index))
+            .Where(day => day.checkbox.Checked)
+            .Select(day => (DayOfWeek)day.index)
+            .ToList();
+        var folders = lstFolders.Items.Cast<string>().ToList();
 
+        if (folders.Count > 0 && days.Count == 0)
+        {
+            ShowStatus("Choose at least one day for the gaming schedule.", true);
+            return;
+        }
+
+        foreach (var folder in folders)
+        {
+            if (!PathGuard.TryValidate(folder, out var guard))
+            {
+                ShowError("Folder unavailable", guard.Message);
+                return;
+            }
+        }
+
+        var config = new GameLockerConfig
+        {
+            AllowedDays = days,
+            GameFolderPaths = folders,
+            StartTime = TimeOnly.FromDateTime(dtpStartTime.Value),
+            DurationHours = (int)nudDuration.Value,
+            NotificationsEnabled = chkNotifications.Checked,
+            PollingIntervalMinutes = _config.PollingIntervalMinutes,
+            LockMode = chkVault.Checked ? LockMode.AclAndVault : LockMode.AclOnly,
+            EncryptionSettings = _config.EncryptionSettings,
+            FolderEncryptionSettings = _folderSettings.Values.ToList(),
+        };
+        await SaveAsync(config);
+    }
+
+    private async void btnClear_Click(object sender, EventArgs e)
+    {
+        if (MessageBox.Show(this,
+            "Clear the saved schedule and restore access to folders GameLocker has locked?",
+            "Clear configuration", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) != DialogResult.Yes)
+        {
+            return;
+        }
+
+        if (await SaveAsync(new GameLockerConfig()))
+            PopulateFormFromConfig();
+    }
+
+    private async Task<bool> SaveAsync(GameLockerConfig config)
+    {
+        _saving = true;
+        UpdateEditControls();
         try
         {
-            // Make sure current folder settings are saved
-            if (lstFolders.SelectedIndex >= 0)
+            var locker = new FolderLocker(_configManager.ConfigDirectory);
+            config.FoldersPendingRestore = _config.GameFolderPaths
+                .Concat(_config.FoldersPendingRestore)
+                .Except(config.GameFolderPaths, StringComparer.OrdinalIgnoreCase)
+                .Where(path => locker.GetFolderState(path) != FolderState.Unlocked)
+                .ToList();
+
+            await _configManager.SaveConfigAsync(config);
+            _config = config;
+
+            if (ServiceManager.IsServiceRunning())
             {
-                var folderPath = lstFolders.SelectedItem?.ToString();
-                if (!string.IsNullOrEmpty(folderPath))
+                await ServiceManager.SendConfigReloadCommandAsync();
+                ShowStatus(config.FoldersPendingRestore.Count == 0
+                    ? "Configuration saved."
+                    : "Configuration saved. The service will restore removed folders.");
+            }
+            else
+            {
+                var errors = new List<string>();
+                foreach (var path in config.FoldersPendingRestore)
                 {
-                    UpdateFolderSettings(folderPath);
+                    var restored = await Task.Run(() => locker.UnlockFolderAsync(path));
+                    if (restored.State != FolderState.Unlocked)
+                        errors.Add($"{path}\n{restored.LastError}");
                 }
-            }
-            
-            PopulateConfigFromForm();
-            await _configManager.SaveConfigAsync(_config);
-            
-            // Immediately notify the service of configuration changes
-            var serviceNotified = await ServiceManager.SendConfigReloadCommandAsync();
-            var serviceStatus = ServiceManager.GetServiceStatus();
-            
-            ShowStatus($"Configuration saved successfully! Service notification: {(serviceNotified ? "SUCCESS" : "FAILED")}", false);
 
-            MessageBox.Show(
-                "Configuration saved successfully!\n\n" +
-                $"Service Status: {serviceStatus?.ToString() ?? "Not Found"}\n" +
-                $"Service Notified: {(serviceNotified ? "Yes" : "No")}\n" +
-                $"Folders configured: {lstFolders.Items.Count}\n" +
-                $"Total extension settings: {_folderSettings.Count}",
-                "Configuration Saved",
-                MessageBoxButtons.OK,
-                MessageBoxIcon.Information);
+                if (errors.Count > 0)
+                    ShowError("Some folders still need recovery", string.Join("\n\n", errors));
+                else
+                    ShowStatus("Configuration saved. GameLocker Service is stopped.", true);
+            }
+
+            return true;
         }
         catch (Exception ex)
         {
-            ShowStatus($"Error saving configuration: {ex.Message}", true);
-            MessageBox.Show(
-                $"Failed to save configuration:\n\n{ex.Message}",
-                "Error",
-                MessageBoxButtons.OK,
-                MessageBoxIcon.Error);
-        }
-    }
-
-    private bool ValidateInputs()
-    {
-        // Check if at least one day is selected
-        if (!chkSunday.Checked && !chkMonday.Checked && !chkTuesday.Checked &&
-            !chkWednesday.Checked && !chkThursday.Checked && !chkFriday.Checked &&
-            !chkSaturday.Checked)
-        {
-            ShowStatus("Please select at least one allowed gaming day.", true);
+            ShowError("Could not save the configuration", ex.Message);
             return false;
-        }
-
-        // Check if duration is valid
-        if (nudDuration.Value < 1)
-        {
-            ShowStatus("Duration must be at least 1 hour.", true);
-            return false;
-        }
-
-        // Check if at least one folder is added
-        if (lstFolders.Items.Count == 0)
-        {
-            ShowStatus("Please add at least one game folder.", true);
-            return false;
-        }
-
-        // Validate all folders exist
-        foreach (string folder in lstFolders.Items)
-        {
-            if (!Directory.Exists(folder))
-            {
-                ShowStatus($"Folder does not exist: {folder}", true);
-                return false;
-            }
-        }
-
-        return true;
-    }
-
-    private void btnTestLock_Click(object sender, EventArgs e)
-    {
-        if (lstFolders.SelectedIndex < 0)
-        {
-            ShowStatus("Select a folder to test lock.", true);
-            return;
-        }
-
-        var folder = lstFolders.SelectedItem?.ToString();
-        if (string.IsNullOrEmpty(folder))
-            return;
-
-        var result = MessageBox.Show(
-            $"This will temporarily deny access to:\n{folder}\n\n" +
-            "No files will be read, written or deleted - only the folder's permissions change.\n" +
-            "They are restored as soon as you close the confirmation.\n\n" +
-            "Continue?",
-            "Test Lock",
-            MessageBoxButtons.YesNo,
-            MessageBoxIcon.Question);
-
-        if (result != DialogResult.Yes)
-            return;
-
-        if (!PathGuard.TryValidate(folder, out var guard))
-        {
-            ShowStatus(guard.Message, true);
-            return;
-        }
-
-        // The snapshot is taken before anything changes and is restored in a finally block, so the
-        // folder cannot be left denied because the dialog was dismissed by a crash or the process
-        // was killed. See ARCHITECTURE-REVIEW.md finding [G-3].
-        AclSnapshot? snapshot = null;
-
-        try
-        {
-            snapshot = FolderAclManager.Capture(guard.Path);
-            FolderAclManager.ApplyLock(guard.Path);
-
-            ShowStatus($"Folder locked: {guard.Path}", false);
-
-            MessageBox.Show(
-                "The folder is now locked.\n\n" +
-                "Try to open it - Explorer should refuse access.\n" +
-                "No files have been modified.\n\n" +
-                "Click OK to restore the original permissions.",
-                "Lock Test",
-                MessageBoxButtons.OK,
-                MessageBoxIcon.Information);
-        }
-        catch (Exception ex)
-        {
-            ShowStatus($"Test failed: {ex.Message}", true);
         }
         finally
         {
-            if (snapshot is { IsRestorable: true })
-            {
-                try
-                {
-                    FolderAclManager.Restore(guard.Path, snapshot);
-
-                    ShowStatus(
-                        FolderAclManager.MatchesSnapshot(guard.Path, snapshot)
-                            ? $"Original permissions restored: {guard.Path}"
-                            : $"Permissions restored, but they do not exactly match the snapshot: {guard.Path}",
-                        false);
-                }
-                catch (Exception restoreEx)
-                {
-                    ShowStatus(
-                        $"WARNING: could not restore permissions on {guard.Path}: {restoreEx.Message}. " +
-                        "Run GameLocker.Recovery to repair it.",
-                        true);
-                }
-            }
+            _saving = false;
+            UpdateEditControls();
         }
     }
 
-    private void ShowStatus(string message, bool isError)
+    private async void btnTestLock_Click(object sender, EventArgs e)
+    {
+        if (lstFolders.SelectedItem is not string folder)
+        {
+            ShowStatus("Select a folder to test.", true);
+            return;
+        }
+
+        if (MessageBox.Show(this, $"Temporarily test the lock on this folder?\n\n{folder}",
+            "Test lock", MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes)
+        {
+            return;
+        }
+
+        _saving = true;
+        UpdateEditControls();
+        ShowStatus("Checking folder permissions…");
+        try
+        {
+            var locker = new FolderLocker(_configManager.ConfigDirectory);
+            Action explainActiveLock = () => MessageBox.Show(this,
+                "The lock is active. Try opening the folder in File Explorer, then click OK to restore access.",
+                "Test lock", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            await Task.Run(() => locker.TestLockFolder(folder, () => Invoke(explainActiveLock)));
+
+            if (!IsDisposed)
+                ShowStatus("Test finished. Original permissions restored.");
+        }
+        catch (Exception ex)
+        {
+            if (!IsDisposed)
+                ShowError("Test lock could not finish", $"{ex.Message}\n\nGameLocker Recovery can restore pending test locks.");
+        }
+        finally
+        {
+            _saving = false;
+            if (!IsDisposed)
+                UpdateEditControls();
+        }
+    }
+
+    private void ShowStatus(string message, bool isError = false)
     {
         lblStatus.Text = message;
-        lblStatus.ForeColor = isError ? Color.Red : Color.Green;
+        lblStatus.ForeColor = isError ? Color.DarkRed : SystemColors.ControlText;
     }
 
-    private void btnClear_Click(object sender, EventArgs e)
+    private void ShowError(string title, string message)
     {
-        var result = MessageBox.Show(
-            "Are you sure you want to clear the configuration?\n\n" +
-            "This will delete all saved settings.",
-            "Clear Configuration",
-            MessageBoxButtons.YesNo,
-            MessageBoxIcon.Warning);
-
-        if (result == DialogResult.Yes)
-        {
-            _configManager.DeleteConfig();
-            _config = new GameLockerConfig();
-            _folderSettings.Clear();
-            PopulateFormFromConfig();
-            ShowStatus("Configuration cleared.", false);
-        }
+        ShowStatus(title, true);
+        MessageBox.Show(this, message, title, MessageBoxButtons.OK, MessageBoxIcon.Error);
     }
-
-    // TriggerImmediateFolderProcessingAsync was removed. It fired an immediate lock command for a
-    // folder that had not yet been written to the configuration, and reported "Command sent to
-    // service" as though the work had been done - there is no acknowledgement on that channel.
-    // Saving the configuration signals the service, which then applies the correct schedule state.
-    // The command channel itself is replaced with an ACL'd named pipe in Phase 3 of
-    // REMEDIATION-PLAN.md. See ARCHITECTURE-REVIEW.md findings [S-9] and [V-1].
 }
 

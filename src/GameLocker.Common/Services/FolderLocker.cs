@@ -107,8 +107,11 @@ public class FolderLocker
 
             if (!FolderAclManager.IsLocked(path))
                 FolderAclManager.ApplyLock(path);
+            else if (!record.AclTreeValidated)
+                FolderAclManager.VerifyCompatibleDescendants(path);
 
             record.AclApplied = true;
+            record.AclTreeValidated = true;
             if (record.Mode == LockMode.AclAndVault && vaultSettings is not null)
                 await EncryptSelectedFilesAsync(record, vaultSettings);
 
@@ -243,6 +246,7 @@ public class FolderLocker
 
         record.Acl = null;
         record.AclApplied = false;
+        record.AclTreeValidated = false;
     }
 
     public FolderState GetFolderState(string folderPath)
@@ -257,7 +261,7 @@ public class FolderLocker
             if (record is { HasOutstandingChanges: true })
             {
                 return !record.LockInProgress && !record.TestLock &&
-                    record.AclApplied && FolderAclManager.IsLocked(path)
+                    record.AclApplied && record.AclTreeValidated && FolderAclManager.IsLocked(path)
                     ? FolderState.Locked
                     : FolderState.Unknown;
             }
@@ -367,6 +371,7 @@ public class FolderLocker
             {
                 var name = Path.GetFileName(file);
                 return !string.Equals(name, ".gamelocker", StringComparison.OrdinalIgnoreCase) &&
+                    !file.EndsWith(".gamelocker-tmp", StringComparison.OrdinalIgnoreCase) &&
                     !file.EndsWith(".enc", StringComparison.OrdinalIgnoreCase) && settings.ShouldEncryptFile(name);
             })
             .ToArray();

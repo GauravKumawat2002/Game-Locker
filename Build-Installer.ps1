@@ -25,7 +25,9 @@ if ($zipPath.StartsWith($packagePrefix, [StringComparison]::OrdinalIgnoreCase)) 
 New-Item -ItemType Directory -Path $OutputDirectory -Force | Out-Null
 
 if ($BuildType -in @('ZIP', 'Both')) {
-    Compress-Archive -Path (Join-Path $PackageDirectory '*') -DestinationPath $zipPath -Force
+    $packageEntries = @('publish', 'GameLocker-Setup.ps1', 'Setup.bat', 'README.txt') |
+        ForEach-Object { Join-Path $PackageDirectory $_ }
+    Compress-Archive -LiteralPath $packageEntries -DestinationPath $zipPath -Force
     Write-Host "Created $zipPath"
 }
 

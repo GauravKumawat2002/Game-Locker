@@ -2,17 +2,18 @@
 
 ## Quick Start
 
-### Option 1: Run the Build Script (EASIEST!)
+### Option 1: Build from the repository root
 
 ```powershell
-cd "h:\Work\10xProductivity\game_locker\code"
 .\Build-Installer.ps1 -BuildType Both
 ```
 
-This creates:
+The ZIP and optional Inno Setup EXE contain self-contained Windows x64 builds
+of the service, the configuration UI, and the recovery tool. The output defaults
+to the repository root. Use `-BuildType ZIP` if Inno Setup is unavailable.
 
-- ✅ **ZIP Installer** (PowerShell-based, works immediately)
-- ✅ **EXE Installer** (GUI-based, professional look)
+Use `-OutputDirectory` and `-PackageDirectory` to build into separate
+directories outside the checkout.
 
 ---
 
@@ -27,12 +28,7 @@ This creates:
 ### Build Steps
 
 ```powershell
-# 1. Build the applications
-cd "h:\Work\10xProductivity\game_locker\code"
-.\Build-Installer.ps1
-
-# 2. The EXE installer will be created at:
-# h:\Work\10xProductivity\game_locker\GameLocker-Installer-v1.1.0.exe
+.\Build-Installer.ps1 -BuildType EXE
 ```
 
 ---
@@ -40,8 +36,6 @@ cd "h:\Work\10xProductivity\game_locker\code"
 ## Option 3: Manual Build (for debugging)
 
 ```powershell
-cd "h:\Work\10xProductivity\game_locker\code"
-
 # Clean
 dotnet clean GameLocker.sln -c Release
 
@@ -59,11 +53,18 @@ dotnet publish src/GameLocker.ConfigUI/GameLocker.ConfigUI.csproj `
   --self-contained true `
   -o "installer-package/publish/configui"
 
+# Build Recovery
+dotnet publish src/GameLocker.Recovery/GameLocker.Recovery.csproj `
+  -c Release `
+  -r win-x64 `
+  --self-contained true `
+  -o "installer-package/publish/recovery"
+
 # Copy scripts
-Copy-Item "installer/PowerShell/GameLocker-Setup.ps1" -Destination "installer-package/" -Force
+Copy-Item "installer/PowerShell/GameLocker-Setup.ps1", "installer/PowerShell/Setup.bat" -Destination "installer-package/" -Force
 
 # Create ZIP
-Compress-Archive -Path "installer-package\*" -DestinationPath "..\GameLocker-Installer-v1.1.0.zip" -Force
+Compress-Archive -Path "installer-package\*" -DestinationPath ".\GameLocker-Installer-v1.1.0.zip" -Force
 ```
 
 ---
@@ -123,6 +124,19 @@ After building, test on a clean machine:
 ---
 
 ## Troubleshooting
+
+### Uninstall reports that recovery failed
+
+The uninstaller stops the service and restores managed folders before removing
+the installation. Repair any reported folders with the installed Recovery tool
+before retrying. Run the tool from an administrator terminal to see recovery
+details.
+
+```powershell
+& "$env:ProgramFiles\GameLocker\Recovery\GameLocker.Recovery.exe" restore-all
+```
+
+The recovery state and encryption keys are kept in `%ProgramData%\GameLocker`.
 
 ### Service won't start
 

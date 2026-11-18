@@ -167,13 +167,13 @@ public class FolderStateStoreTests : IDisposable
 
     [Fact]
     [Trait("Category", "Basic")]
-    public void TryLoad_ReturnsNullForACorruptRecordButKeepsTheFile()
+    public void TryLoad_ReportsACorruptRecordAndKeepsTheFile()
     {
         var recordPath = _store.GetRecordPath(@"C:\Games\Title");
         Directory.CreateDirectory(_root);
         File.WriteAllText(recordPath, "{ truncated");
 
-        Assert.Null(_store.TryLoad(@"C:\Games\Title"));
+        Assert.Throws<IOException>(() => _store.TryLoad(@"C:\Games\Title"));
 
         // The file is the only description of what was done to the folder, so it must survive.
         Assert.True(File.Exists(recordPath));
@@ -187,6 +187,9 @@ public class FolderStateStoreTests : IDisposable
         Assert.True(record.HasOutstandingChanges);
 
         record.AclApplied = false;
+        Assert.True(record.HasOutstandingChanges);
+
+        record.Acl = null;
         Assert.False(record.HasOutstandingChanges);
 
         record.VaultFiles.Add(@"saves\slot1.sav");

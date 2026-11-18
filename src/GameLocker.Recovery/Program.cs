@@ -11,6 +11,15 @@ internal static class Program
     private static async Task<int> Main(string[] args)
     {
         var command = args.Length == 0 ? "list" : args[0].ToLowerInvariant();
+        if (command is "help" or "--help" or "-h" or "/?")
+            return Help();
+
+        if (!AclHelper.IsRunningAsAdmin())
+        {
+            Console.Error.WriteLine("Run GameLocker Recovery from an elevated prompt.");
+            return 3;
+        }
+
         var store = new FolderStateStore();
         var locker = new FolderLocker(ConfigManager.GetDefaultConfigDirectory(), store);
 
@@ -22,7 +31,6 @@ internal static class Program
                 "restore" or "--restore" when args.Length == 2 => await RestoreAsync(locker, args[1]) ? 0 : 1,
                 "restore-all" or "--restore-all" when args.Length == 1 => await RestoreAllAsync(locker),
                 "restore-file" when args.Length == 2 => await RestoreFileAsync(locker, args[1]),
-                "help" or "--help" or "-h" or "/?" => Help(),
                 _ => Help(exitCode: 2),
             };
         }
@@ -41,7 +49,8 @@ internal static class Program
         Console.WriteLine("  GameLocker.Recovery restore <folder>     Restore one folder from its lock journal");
         Console.WriteLine("  GameLocker.Recovery restore-all          Restore folders with outstanding changes");
         Console.WriteLine("  GameLocker.Recovery restore-file <path>  Recover an explicitly selected legacy .enc file");
-        Console.WriteLine("Legacy file recovery keeps the encrypted source. Keep it until you verify the restored file.");
+        Console.WriteLine("Legacy file recovery keeps the encrypted source. After verifying the restored file,");
+        Console.WriteLine("move its encrypted copy to a backup folder before retrying the folder restore.");
         return exitCode;
     }
 
@@ -85,7 +94,10 @@ internal static class Program
 
         var configResult = await new ConfigManager().LoadConfigResultAsync();
         if (configResult.IsDamaged)
+        {
             Console.Error.WriteLine($"Could not check the configuration for legacy lock markers. {configResult.Error}");
+            failed++;
+        }
 
         var config = configResult.Config;
         var legacyPaths = (config?.GameFolderPaths ?? []).Concat(config?.FoldersPendingRestore ?? [])
@@ -108,21 +120,29 @@ internal static class Program
 
     private static async Task<bool> RestoreAsync(FolderLocker locker, string folderPath)
     {
-        var path = PathGuard.Validate(folderPath);
-        if (locker.StateStore.TryLoad(path) is null && !locker.HasLockMarker(path))
+        try
         {
-            Console.Error.WriteLine($"No GameLocker journal or legacy marker exists for '{path}'.");
-            return false;
+            var path = PathGuard.Validate(folderPath);
+            if (locker.StateStore.TryLoad(path) is null && !locker.HasLockMarker(path))
+            {
+                Console.Error.WriteLine($"No GameLocker journal or legacy marker exists for '{path}'.");
+                return false;
+            }
+
+            var result = await locker.UnlockFolderAsync(path);
+            if (result.State == FolderState.Unlocked)
+            {
+                Console.WriteLine($"Restored: {path}");
+                return true;
+            }
+
+            Console.Error.WriteLine($"Could not fully restore '{path}': {result.LastError}");
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"Could not fully restore '{folderPath}': {ex.Message}");
         }
 
-        var result = await locker.UnlockFolderAsync(path);
-        if (result.State == FolderState.Unlocked)
-        {
-            Console.WriteLine($"Restored: {path}");
-            return true;
-        }
-
-        Console.Error.WriteLine($"Could not fully restore '{path}': {result.LastError}");
         return false;
     }
 

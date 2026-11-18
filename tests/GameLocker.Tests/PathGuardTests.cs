@@ -1,4 +1,6 @@
+using System.Diagnostics;
 using GameLocker.Common.Security;
+using GameLocker.Common.Services;
 
 namespace GameLocker.Tests;
 
@@ -158,6 +160,46 @@ public class PathGuardTests : IDisposable
     public void Validate_ThrowsForIneligiblePaths()
     {
         Assert.Throws<InvalidOperationException>(() => PathGuard.Validate(Environment.SystemDirectory));
+    }
+
+    [Fact]
+    [Trait("Category", "Basic")]
+    public void JunctionAncestryIsRejectedAndScansSkipTheJunction()
+    {
+        var selected = Directory.CreateDirectory(Path.Combine(_testFolder, "selected")).FullName;
+        var target = Directory.CreateDirectory(Path.Combine(_testFolder, "target", "child")).FullName;
+        var junction = Path.Combine(selected, "linked");
+        File.WriteAllText(Path.Combine(target, "outside.sav"), "fixture data");
+        File.WriteAllText(Path.Combine(selected, "inside.cfg"), "fixture data");
+
+        var command = new ProcessStartInfo(Environment.GetEnvironmentVariable("ComSpec") ?? "cmd.exe")
+        {
+            Arguments = "/d /c mklink /J \"%GAMELOCKER_TEST_JUNCTION%\" \"%GAMELOCKER_TEST_TARGET%\"",
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+        };
+        command.Environment["GAMELOCKER_TEST_JUNCTION"] = junction;
+        command.Environment["GAMELOCKER_TEST_TARGET"] = Path.GetDirectoryName(target);
+        using var process = Process.Start(command)!;
+        Assert.True(process.WaitForExit(5000));
+        Assert.True(process.ExitCode == 0, process.StandardError.ReadToEnd());
+
+        try
+        {
+            Assert.False(PathGuard.TryValidate(Path.Combine(junction, "child"), out var rejected));
+            Assert.Equal(PathRejectionReason.ReparsePoint, rejected.Reason);
+
+            var scan = new FileExtensionScanner().ScanFolderExtensions(selected);
+            Assert.Null(scan.ErrorMessage);
+            Assert.Single(scan.Extensions);
+            Assert.True(scan.Extensions.ContainsKey(".cfg"));
+        }
+        finally
+        {
+            Directory.Delete(junction);
+        }
     }
 
     [Theory]

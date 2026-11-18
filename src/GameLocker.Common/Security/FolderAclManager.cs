@@ -79,6 +79,7 @@ public static class FolderAclManager
         if (!Directory.Exists(folderPath))
             throw new DirectoryNotFoundException($"Directory not found: {folderPath}");
 
+        VerifyCompatibleDescendants(folderPath);
         var security = new DirectorySecurity();
 
         // Protected: stop inheriting the permissive entries from the parent, and do not copy them
@@ -102,6 +103,43 @@ public static class FolderAclManager
         new DirectoryInfo(folderPath).SetAccessControl(security);
 
         VerifyLocked(folderPath);
+    }
+
+    /// <summary>
+    /// Checks whether existing descendants can safely inherit the folder lock. The lock never
+    /// overwrites a descendant's explicit rules or changes a descendant's inheritance policy.
+    /// </summary>
+    internal static void VerifyCompatibleDescendants(string folderPath)
+    {
+        var system = new SecurityIdentifier(WellKnownSidType.LocalSystemSid, null);
+        var admins = new SecurityIdentifier(WellKnownSidType.BuiltinAdministratorsSid, null);
+        var directories = new Stack<string>();
+        directories.Push(folderPath);
+
+        while (directories.TryPop(out var directory))
+        {
+            PathGuard.EnsureNoReparsePoints(directory);
+            foreach (var path in Directory.EnumerateFileSystemEntries(directory))
+            {
+                PathGuard.EnsureNoReparsePoints(path);
+                var isDirectory = File.GetAttributes(path).HasFlag(FileAttributes.Directory);
+                FileSystemSecurity security = isDirectory
+                    ? new DirectoryInfo(path).GetAccessControl(AccessControlSections.Access)
+                    : new FileInfo(path).GetAccessControl(AccessControlSections.Access);
+
+                var incompatible = security.AreAccessRulesProtected || security
+                    .GetAccessRules(includeExplicit: true, includeInherited: false, typeof(SecurityIdentifier))
+                    .Cast<FileSystemAccessRule>()
+                    .Any(rule => rule.AccessControlType != AccessControlType.Allow ||
+                        (!rule.IdentityReference.Equals(system) && !rule.IdentityReference.Equals(admins)));
+
+                if (incompatible)
+                    throw new InvalidOperationException($"Folder cannot be locked safely because '{path}' has separate permissions.");
+
+                if (isDirectory)
+                    directories.Push(path);
+            }
+        }
     }
 
     /// <summary>

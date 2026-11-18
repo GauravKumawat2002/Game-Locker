@@ -68,9 +68,7 @@ partial class Form1
         
         // Settings controls
         this.chkNotifications = new System.Windows.Forms.CheckBox();
-        this.lblPollingInterval = new System.Windows.Forms.Label();
-        this.nudPollingInterval = new System.Windows.Forms.NumericUpDown();
-        this.lblPollingMinutes = new System.Windows.Forms.Label();
+        this.chkVault = new System.Windows.Forms.CheckBox();
         
         // Action buttons
         this.btnSave = new System.Windows.Forms.Button();
@@ -86,7 +84,6 @@ partial class Form1
         this.grpSettings.SuspendLayout();
         this.grpExtensions.SuspendLayout();
         ((System.ComponentModel.ISupportInitialize)(this.nudDuration)).BeginInit();
-        ((System.ComponentModel.ISupportInitialize)(this.nudPollingInterval)).BeginInit();
         this.SuspendLayout();
 
         // 
@@ -260,16 +257,16 @@ partial class Form1
         this.grpExtensions.Size = new System.Drawing.Size(300, 300);
         this.grpExtensions.TabIndex = 3;
         this.grpExtensions.TabStop = false;
-        this.grpExtensions.Text = "📁 File Types to Encrypt (per folder)";
+        this.grpExtensions.Text = "Vault file types";
 
         this.lblExtensionInfo.AutoSize = false;
         this.lblExtensionInfo.Location = new System.Drawing.Point(10, 22);
         this.lblExtensionInfo.Name = "lblExtensionInfo";
         this.lblExtensionInfo.Size = new System.Drawing.Size(280, 30);
         this.lblExtensionInfo.Text = "Select a folder to view file types";
-        this.lblExtensionInfo.ForeColor = System.Drawing.Color.DarkBlue;
 
         this.clbExtensions.FormattingEnabled = true;
+        this.clbExtensions.AccessibleName = "File types to encrypt";
         this.clbExtensions.Location = new System.Drawing.Point(10, 55);
         this.clbExtensions.Name = "clbExtensions";
         this.clbExtensions.Size = new System.Drawing.Size(280, 202);
@@ -281,31 +278,28 @@ partial class Form1
         this.btnSelectSafe.Name = "btnSelectSafe";
         this.btnSelectSafe.Size = new System.Drawing.Size(85, 28);
         this.btnSelectSafe.TabIndex = 1;
-        this.btnSelectSafe.Text = "✓ Safe Only";
-        this.btnSelectSafe.BackColor = System.Drawing.Color.LightGreen;
+        this.btnSelectSafe.Text = "Save files";
         this.btnSelectSafe.Click += new System.EventHandler(this.btnSelectSafe_Click);
 
         this.btnSelectNone.Location = new System.Drawing.Point(105, 263);
         this.btnSelectNone.Name = "btnSelectNone";
         this.btnSelectNone.Size = new System.Drawing.Size(85, 28);
         this.btnSelectNone.TabIndex = 2;
-        this.btnSelectNone.Text = "✗ Clear All";
+        this.btnSelectNone.Text = "Clear selection";
         this.btnSelectNone.Click += new System.EventHandler(this.btnSelectNone_Click);
 
         this.btnRescan.Location = new System.Drawing.Point(200, 263);
         this.btnRescan.Name = "btnRescan";
         this.btnRescan.Size = new System.Drawing.Size(90, 28);
         this.btnRescan.TabIndex = 3;
-        this.btnRescan.Text = "↻ Rescan";
+        this.btnRescan.Text = "Scan file types";
         this.btnRescan.Click += new System.EventHandler(this.btnRescan_Click);
 
         // 
         // grpSettings
         // 
         this.grpSettings.Controls.Add(this.chkNotifications);
-        this.grpSettings.Controls.Add(this.lblPollingInterval);
-        this.grpSettings.Controls.Add(this.nudPollingInterval);
-        this.grpSettings.Controls.Add(this.lblPollingMinutes);
+        this.grpSettings.Controls.Add(this.chkVault);
         this.grpSettings.Location = new System.Drawing.Point(380, 318);
         this.grpSettings.Name = "grpSettings";
         this.grpSettings.Size = new System.Drawing.Size(300, 70);
@@ -322,25 +316,12 @@ partial class Form1
         this.chkNotifications.TabIndex = 0;
         this.chkNotifications.Text = "Enable Notifications";
 
-        this.lblPollingInterval.AutoSize = true;
-        this.lblPollingInterval.Location = new System.Drawing.Point(15, 48);
-        this.lblPollingInterval.Name = "lblPollingInterval";
-        this.lblPollingInterval.Size = new System.Drawing.Size(73, 15);
-        this.lblPollingInterval.Text = "Check every:";
-
-        this.nudPollingInterval.Location = new System.Drawing.Point(95, 45);
-        this.nudPollingInterval.Maximum = new decimal(new int[] { 60, 0, 0, 0 });
-        this.nudPollingInterval.Minimum = new decimal(new int[] { 1, 0, 0, 0 });
-        this.nudPollingInterval.Name = "nudPollingInterval";
-        this.nudPollingInterval.Size = new System.Drawing.Size(45, 23);
-        this.nudPollingInterval.TabIndex = 1;
-        this.nudPollingInterval.Value = new decimal(new int[] { 1, 0, 0, 0 });
-
-        this.lblPollingMinutes.AutoSize = true;
-        this.lblPollingMinutes.Location = new System.Drawing.Point(145, 48);
-        this.lblPollingMinutes.Name = "lblPollingMinutes";
-        this.lblPollingMinutes.Size = new System.Drawing.Size(28, 15);
-        this.lblPollingMinutes.Text = "min";
+        this.chkVault.AutoSize = true;
+        this.chkVault.Location = new System.Drawing.Point(15, 46);
+        this.chkVault.Name = "chkVault";
+        this.chkVault.TabIndex = 1;
+        this.chkVault.Text = "Encrypt selected file types when locked";
+        this.chkVault.CheckedChanged += new System.EventHandler(this.chkVault_CheckedChanged);
 
         // 
         // btnSave
@@ -353,7 +334,7 @@ partial class Form1
         this.btnSave.Name = "btnSave";
         this.btnSave.Size = new System.Drawing.Size(170, 35);
         this.btnSave.TabIndex = 5;
-        this.btnSave.Text = "💾 Save Configuration";
+        this.btnSave.Text = "Save configuration";
         this.btnSave.UseVisualStyleBackColor = false;
         this.btnSave.Click += new System.EventHandler(this.btnSave_Click);
 
@@ -364,16 +345,16 @@ partial class Form1
         this.btnClear.Name = "btnClear";
         this.btnClear.Size = new System.Drawing.Size(170, 35);
         this.btnClear.TabIndex = 6;
-        this.btnClear.Text = "🗑️ Clear All Settings";
+        this.btnClear.Text = "Clear configuration";
         this.btnClear.Click += new System.EventHandler(this.btnClear_Click);
 
         // 
         // lblStatus
         // 
-        this.lblStatus.AutoSize = true;
-        this.lblStatus.Location = new System.Drawing.Point(12, 365);
+        this.lblStatus.AutoSize = false;
+        this.lblStatus.Location = new System.Drawing.Point(12, 396);
         this.lblStatus.Name = "lblStatus";
-        this.lblStatus.Size = new System.Drawing.Size(230, 15);
+        this.lblStatus.Size = new System.Drawing.Size(668, 36);
         this.lblStatus.Text = "Configure your gaming schedule and folders.";
 
         // 
@@ -381,7 +362,7 @@ partial class Form1
         // 
         this.AutoScaleDimensions = new System.Drawing.SizeF(7F, 15F);
         this.AutoScaleMode = System.Windows.Forms.AutoScaleMode.Font;
-        this.ClientSize = new System.Drawing.Size(694, 395);
+        this.ClientSize = new System.Drawing.Size(694, 439);
         this.Controls.Add(this.grpDays);
         this.Controls.Add(this.grpTime);
         this.Controls.Add(this.grpFolders);
@@ -406,7 +387,6 @@ partial class Form1
         this.grpSettings.ResumeLayout(false);
         this.grpSettings.PerformLayout();
         ((System.ComponentModel.ISupportInitialize)(this.nudDuration)).EndInit();
-        ((System.ComponentModel.ISupportInitialize)(this.nudPollingInterval)).EndInit();
         this.ResumeLayout(false);
         this.PerformLayout();
     }
@@ -446,9 +426,7 @@ partial class Form1
     private System.Windows.Forms.Button btnRescan;
     
     private System.Windows.Forms.CheckBox chkNotifications;
-    private System.Windows.Forms.Label lblPollingInterval;
-    private System.Windows.Forms.NumericUpDown nudPollingInterval;
-    private System.Windows.Forms.Label lblPollingMinutes;
+    private System.Windows.Forms.CheckBox chkVault;
     
     private System.Windows.Forms.Button btnSave;
     private System.Windows.Forms.Button btnClear;

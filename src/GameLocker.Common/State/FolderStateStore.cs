@@ -91,7 +91,7 @@ public sealed class FolderStateStore
         PathGuard.EnsureNoReparsePoints(_stateDirectory);
         Directory.CreateDirectory(_stateDirectory);
 
-        if (!_hardenPermissions)
+        if (!_hardenPermissions || FolderAclManager.IsLocked(_stateDirectory))
             return true;
 
         try
@@ -190,6 +190,7 @@ public sealed class FolderStateStore
         record.SchemaVersion = FolderStateRecord.CurrentSchemaVersion;
 
         var file = GetRecordPath(record.FolderPath);
+        PathGuard.EnsureNoReparsePoints(file);
         var temp = file + $".{Guid.NewGuid():N}.tmp";
         var json = JsonSerializer.Serialize(record, JsonOptions);
 
@@ -232,21 +233,26 @@ public sealed class FolderStateStore
     /// <returns>All readable records. Unreadable files are skipped.</returns>
     public IReadOnlyList<FolderStateRecord> LoadAll(Action<string>? reportError = null)
     {
-        if (!Directory.Exists(_stateDirectory))
-            return Array.Empty<FolderStateRecord>();
-
         var records = new List<FolderStateRecord>();
+        PathGuard.EnsureNoReparsePoints(_stateDirectory);
 
-        foreach (var file in Directory.EnumerateFiles(_stateDirectory, "*.json"))
+        try
         {
-            try
+            foreach (var file in Directory.EnumerateFiles(_stateDirectory, "*.json"))
             {
-                records.Add(ReadRecord(file));
+                try
+                {
+                    records.Add(ReadRecord(file));
+                }
+                catch (Exception ex) when (ex is JsonException or IOException or UnauthorizedAccessException or ArgumentException)
+                {
+                    reportError?.Invoke($"Could not read the GameLocker journal '{file}': {ex.Message}");
+                }
             }
-            catch (Exception ex) when (ex is JsonException or IOException or UnauthorizedAccessException or ArgumentException)
-            {
-                reportError?.Invoke($"Could not read the GameLocker journal '{file}': {ex.Message}");
-            }
+        }
+        catch (DirectoryNotFoundException)
+        {
+            // The state directory has not been created yet.
         }
 
         return records;

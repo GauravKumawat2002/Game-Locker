@@ -119,6 +119,26 @@ public class ScheduleWindowTests
 
     [Fact]
     [Trait("Category", "Basic")]
+    public void ConsecutiveFullDaysReportTheEndOfTheCombinedWindow()
+    {
+        var config = Config(new TimeOnly(18, 0), 24, DayOfWeek.Saturday, DayOfWeek.Sunday);
+
+        Assert.Equal(Mon(18), config.GetNextLockTime(Sun(17, 55)));
+        Assert.True(config.IsWithinAllowedTime(Sun(18)));
+    }
+
+    [Fact]
+    [Trait("Category", "Basic")]
+    public void RoundTheClockScheduleHasNoUpcomingLock()
+    {
+        var config = Config(new TimeOnly(18, 0), 24, Enum.GetValues<DayOfWeek>());
+
+        Assert.True(config.IsWithinAllowedTime(Sat(17, 55)));
+        Assert.Null(config.GetNextLockTime(Sat(17, 55)));
+    }
+
+    [Fact]
+    [Trait("Category", "Basic")]
     public void ConsecutiveAllowedDays_ProduceOverlappingWindowsWithoutGaps()
     {
         var config = Config(new TimeOnly(20, 0), 8, DayOfWeek.Saturday, DayOfWeek.Sunday);

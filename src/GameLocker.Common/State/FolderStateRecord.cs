@@ -49,6 +49,9 @@ public sealed class FolderStateRecord
     [JsonPropertyName("aclApplied")]
     public bool AclApplied { get; set; }
 
+    [JsonPropertyName("aclTreeValidated")]
+    public bool AclTreeValidated { get; set; }
+
     /// <summary>
     /// The folder's access control state before it was locked.
     /// </summary>

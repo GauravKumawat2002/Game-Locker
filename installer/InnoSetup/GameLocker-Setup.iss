@@ -87,10 +87,6 @@ Filename: "sc.exe"; Parameters: "start GameLockerService"; Flags: runhidden wait
 ; Launch Config UI after install
 Filename: "{app}\ConfigUI\{#MyAppConfigExeName}"; Description: "{cm:LaunchProgram,{#StringChange(MyAppName, '&', '&&')} Configuration}"; Flags: nowait postinstall skipifsilent
 
-[UninstallRun]
-; InitializeUninstall has stopped the service and verified recovery.
-Filename: "sc.exe"; Parameters: "delete GameLockerService"; Flags: runhidden
-
 [UninstallDelete]
 Type: filesandordirs; Name: "{app}\Logs"
 Type: dirifempty; Name: "{commonappdata}\{#MyAppName}"
@@ -116,16 +112,18 @@ begin
     StopCommand, '', SW_HIDE, ewWaitUntilTerminated, ExitCode) and (ExitCode = 0);
 end;
 
-function InitializeUninstall(): Boolean;
+procedure CurUninstallStepChanged(Step: TUninstallStep);
 var
   ExitCode: Integer;
   RecoveryPath: String;
 begin
-  Result := False;
+  if Step <> usUninstall then
+    Exit;
+
   if not StopGameLockerServices() then
   begin
     SuppressibleMsgBox('GameLocker could not stop its service. Uninstall was cancelled.', mbError, MB_OK, IDOK);
-    Exit;
+    Abort;
   end;
 
   RecoveryPath := ExpandConstant('{app}\Recovery\{#MyAppRecoveryExeName}');
@@ -134,37 +132,41 @@ begin
     SuppressibleMsgBox('GameLocker could not verify that all game folders were restored. ' +
       'Uninstall was cancelled. Run "' + RecoveryPath + '" restore-all from an administrator terminal.',
       mbError, MB_OK, IDOK);
-    Exit;
+    Abort;
   end;
 
-  Result := True;
+  if HasCanonicalService() then
+  begin
+    if not Exec(ExpandConstant('{sys}\sc.exe'), 'delete GameLockerService', '',
+      SW_HIDE, ewWaitUntilTerminated, ExitCode) or (ExitCode <> 0) then
+    begin
+      SuppressibleMsgBox('Game folders were restored. The service could not be removed, so the installed files were kept.',
+        mbError, MB_OK, IDOK);
+      Abort;
+    end;
+  end;
 end;
 
-function InitializeSetup(): Boolean;
+function PrepareToInstall(var NeedsRestart: Boolean): String;
 var
   ErrorCode: Integer;
   ServiceKey: String;
 begin
-  Result := True;
+  Result := '';
   ServiceKey := 'SYSTEM\CurrentControlSet\Services\';
   if RegKeyExists(HKEY_LOCAL_MACHINE, ServiceKey + 'GameLockerService') or
      RegKeyExists(HKEY_LOCAL_MACHINE, ServiceKey + 'GameLocker Service') then
   begin
-    if SuppressibleMsgBox('GameLocker service is already installed. Do you want to upgrade?',
-      mbConfirmation, MB_YESNO, IDYES) = IDNO then
+    if not StopGameLockerServices() then
     begin
-      Result := False;
+      Result := 'GameLocker could not stop its service. Upgrade was cancelled.';
       Exit;
     end;
 
-    Result := StopGameLockerServices();
-    if Result and RegKeyExists(HKEY_LOCAL_MACHINE, ServiceKey + 'GameLocker Service') then
-      Result := Exec(ExpandConstant('{sys}\sc.exe'), 'delete "GameLocker Service"',
-        '', SW_HIDE, ewWaitUntilTerminated, ErrorCode) and (ErrorCode = 0);
-
-    if not Result then
-      SuppressibleMsgBox('GameLocker could not stop or migrate its service. Upgrade was cancelled.',
-        mbError, MB_OK, IDOK);
+    if RegKeyExists(HKEY_LOCAL_MACHINE, ServiceKey + 'GameLocker Service') then
+      if not Exec(ExpandConstant('{sys}\sc.exe'), 'delete "GameLocker Service"',
+        '', SW_HIDE, ewWaitUntilTerminated, ErrorCode) or (ErrorCode <> 0) then
+        Result := 'GameLocker could not migrate its legacy service. Upgrade was cancelled.';
   end;
 end;
 

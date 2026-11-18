@@ -70,14 +70,14 @@ public class FolderEncryptionSettings
         if (FileExtensionScanner.IsNeverEncryptable(fileName))
             return false;
 
-        if (!UseCustomSelection || SelectedExtensions.Count == 0)
+        if (!UseCustomSelection)
         {
             // Fall back to preset if no custom selection
             return FallbackPreset?.ShouldEncryptFile(fileName) ?? false;
         }
 
         var extension = Path.GetExtension(fileName).ToLowerInvariant();
-        return SelectedExtensions.Contains(extension);
+        return SelectedExtensions.Contains(extension, StringComparer.OrdinalIgnoreCase);
     }
     
     /// <summary>
@@ -85,11 +85,14 @@ public class FolderEncryptionSettings
     /// </summary>
     public string GetEncryptionSummary()
     {
-        if (!UseCustomSelection || SelectedExtensions.Count == 0)
+        if (!UseCustomSelection)
         {
             var fallback = FallbackPreset?.GetEncryptionSummary() ?? "No encryption configured";
             return $"Using preset: {fallback}";
         }
+
+        if (SelectedExtensions.Count == 0)
+            return "No file types selected";
         
         if (SelectedExtensions.Count <= 5)
         {
