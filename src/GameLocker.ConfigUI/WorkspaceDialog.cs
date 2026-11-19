@@ -2,8 +2,17 @@
 
 internal sealed class WorkspaceDialog : Form
 {
-    private WorkspaceDialog(string title, string message, string actionText, string? cancelText = null, bool danger = false)
+    private readonly Form1 _owner;
+    private readonly Label _heading;
+    private readonly TextBox _content;
+    private readonly bool _danger;
+    internal WorkspaceTheme Theme { get; private set; }
+
+    private WorkspaceDialog(Form1 owner, string title, string message, string actionText, string? cancelText = null, bool danger = false)
     {
+        _owner = owner;
+        _danger = danger;
+        Theme = owner.ReadTheme();
         AutoScaleDimensions = new SizeF(96, 96);
         AutoScaleMode = AutoScaleMode.Dpi;
         var bodySize = TextRenderer.MeasureText(message, WorkspaceTheme.Body, new Size(488, int.MaxValue),
@@ -15,7 +24,6 @@ internal sealed class WorkspaceDialog : Form
         MaximizeBox = false;
         StartPosition = FormStartPosition.CenterParent;
         Text = "GameLocker";
-        BackColor = WorkspaceTheme.Surface;
         Font = WorkspaceTheme.Body;
 
         var root = new TableLayoutPanel
@@ -25,19 +33,20 @@ internal sealed class WorkspaceDialog : Form
         root.RowStyles.Add(new RowStyle(SizeType.Absolute, 41));
         root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         root.RowStyles.Add(new RowStyle(SizeType.Absolute, 45));
-        root.Controls.Add(new Label
+        _heading = new Label
         {
-            Text = title, Font = WorkspaceTheme.Section, ForeColor = danger ? WorkspaceTheme.Error : WorkspaceTheme.Text,
+            Text = title, Font = WorkspaceTheme.Section,
             TextAlign = ContentAlignment.MiddleLeft, Dock = DockStyle.Fill, Margin = Padding.Empty,
-        }, 0, 0);
-        var content = new TextBox
+        };
+        root.Controls.Add(_heading, 0, 0);
+        _content = new TextBox
         {
             Text = message.ReplaceLineEndings(Environment.NewLine), ReadOnly = true, Multiline = true,
-            AccessibleName = "Details", BackColor = WorkspaceTheme.Surface, ForeColor = WorkspaceTheme.Text,
+            AccessibleName = "Details",
             BorderStyle = BorderStyle.None, ScrollBars = bodySize.Height > 230 ? ScrollBars.Vertical : ScrollBars.None,
             Dock = DockStyle.Fill, Margin = new Padding(0, 3, 0, 5),
         };
-        root.Controls.Add(content, 0, 1);
+        root.Controls.Add(_content, 0, 1);
 
         var buttons = new FlowLayoutPanel
         {
@@ -68,24 +77,51 @@ internal sealed class WorkspaceDialog : Form
             CancelButton = action;
             ActiveControl = action;
         }
+
+        ApplyAppearance();
+    }
+
+    private void ApplyAppearance()
+    {
+        BackColor = Theme.Surface;
+        ForeColor = Theme.Text;
+        _heading.ForeColor = _danger ? Theme.Error : Theme.Text;
+        _content.BackColor = Theme.Surface;
+        _content.ForeColor = Theme.Text;
+        Theme.ApplyTitleBar(this);
+        Invalidate(true);
     }
 
     protected override void OnHandleCreated(EventArgs e)
     {
         base.OnHandleCreated(e);
-        WorkspaceTheme.UseDarkTitleBar(this);
+        Theme.ApplyTitleBar(this);
     }
 
-    public static bool Confirm(Form owner, string title, string message, string action,
+    protected override void WndProc(ref Message message)
+    {
+        base.WndProc(ref message);
+        if (_content is null || !WorkspaceTheme.IsAppearanceMessage(message.Msg))
+            return;
+
+        var theme = _owner.ReadTheme();
+        if (theme != Theme || theme.HighContrast)
+        {
+            Theme = theme;
+            ApplyAppearance();
+        }
+    }
+
+    public static bool Confirm(Form1 owner, string title, string message, string action,
         string cancel = "Cancel", bool danger = false)
     {
-        using var dialog = new WorkspaceDialog(title, message, action, cancel, danger);
+        using var dialog = new WorkspaceDialog(owner, title, message, action, cancel, danger);
         return dialog.ShowDialog(owner) == DialogResult.OK;
     }
 
-    public static void ShowMessage(Form owner, string title, string message, string action, bool error = false)
+    public static void ShowMessage(Form1 owner, string title, string message, string action, bool error = false)
     {
-        using var dialog = new WorkspaceDialog(title, message, action, danger: error);
+        using var dialog = new WorkspaceDialog(owner, title, message, action, danger: error);
         dialog.ShowDialog(owner);
     }
 }

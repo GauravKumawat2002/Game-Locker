@@ -24,14 +24,19 @@ public partial class Form1 : Form
     private bool _populating;
     private bool _populatingExtensions;
     private bool _dirty;
+    private StatusTone _statusTone;
+    private StatusTone _vaultStateTone;
 
     public Form1() : this(new ConfigManager())
     {
     }
 
-    internal Form1(ConfigManager configManager)
+    internal Form1(ConfigManager configManager, WorkspaceThemePreferences? themePreferences = null)
     {
         _configManager = configManager;
+        _themePreferences = themePreferences ?? new WorkspaceThemePreferences();
+        _themeMode = _themePreferences.Read();
+        Theme = ReadTheme();
         InitializeWorkspace();
         PopulateFromConfiguration();
         UpdateEditControls();
@@ -162,11 +167,11 @@ public partial class Form1 : Form
                 saved.UseCustomSelection != pair.Value.UseCustomSelection ||
                 !saved.SelectedExtensions.ToHashSet(StringComparer.OrdinalIgnoreCase).SetEquals(pair.Value.SelectedExtensions));
 
-        SetCaption(_configState, !_loaded ? "LOADING CONFIGURATION"
-            : !_canEdit ? "READ ONLY"
-            : _dirty ? "UNSAVED CHANGES"
-            : _hasSavedConfig ? "SAVED CONFIGURATION" : "NEW CONFIGURATION");
-        _configState.ForeColor = _dirty && _canEdit ? WorkspaceTheme.Warn : WorkspaceTheme.Muted;
+        SetCaption(_configState, !_loaded ? "Loading configuration"
+            : !_canEdit ? "Read only"
+            : _dirty ? "Unsaved changes"
+            : _hasSavedConfig ? "Saved configuration" : "New configuration");
+        ApplyScheduleAppearance();
         UpdateEditControls();
         UpdatePreview();
     }
@@ -180,28 +185,59 @@ public partial class Form1 : Form
         if (!TryReadStart(out var start) || !TryReadDuration(out var duration))
         {
             _timeline.SetWindow(default, 0, false);
+            _timeline.AccessibleDescription = "The time window is incomplete.";
             SetCaption(_windowState, "");
+            _windowSummary.Font = WorkspaceTheme.Data;
             SetCaption(_windowSummary, "Incomplete time window");
-            SetCaption(_transition, "Use a 24-hour start time and a duration of 1–24 hours.");
+            SetPreviewTransition("Check the time window", "Use a 24-hour start and a duration of 1–24 hours.");
             return;
         }
 
         var days = ReadDays();
-        var crossesMidnight = start.ToTimeSpan().Add(TimeSpan.FromHours(duration)).TotalHours >= 24;
+        var endTime = start.ToTimeSpan().Add(TimeSpan.FromHours(duration));
+        var crossesMidnight = endTime.TotalHours >= 24;
         var schedule = new GameLockerConfig { AllowedDays = days, StartTime = start, DurationHours = duration };
         _timeline.SetWindow(start, duration, days.Count > 0);
-        _timeline.AccessibleDescription = crossesMidnight
-            ? "Highlights play time from a selected day’s start into the following day."
-            : "Highlights play time on the selected days.";
+        var end = endTime.TotalHours == 24 ? "24:00" : FormatInputTime(start.AddHours(duration));
+        var range = $"{FormatInputTime(start)}–{end}";
+        _timeline.AccessibleDescription = days.Count == 0 ? "Select the days when this window starts."
+            : crossesMidnight ? $"Allowed play time {range}, ending the next day." : $"Allowed play time {range}.";
         var state = schedule.GetScheduleState(DateTime.Now);
         SetCaption(_windowState, days.Count == 0 ? "" : state.IsAllowed ? "PLAY OPEN" : "PLAY CLOSED");
-        _windowState.ForeColor = state.IsAllowed ? WorkspaceTheme.Accent : WorkspaceTheme.Muted;
-        var range = $"{start:HH':'mm}–{start.AddHours(duration):HH':'mm}";
-        SetCaption(_windowSummary, crossesMidnight ? $"{range}  ·  ends next day" : $"{range}  ·  local time");
-        SetCaption(_transition, days.Count == 0 ? "Select the days when this window starts."
-            : state.NextTransition is { } next
-                ? $"Next {(state.IsAllowed ? "lock" : "unlock")}  {next:ddd, d MMM} at {FormatInputTime(TimeOnly.FromDateTime(next))}"
-                : "Play is allowed all week.");
+        _windowSummary.Font = start.Ticks % TimeSpan.TicksPerSecond == 0
+            ? WorkspaceTheme.Data : WorkspaceTheme.Metadata;
+        SetCaption(_windowSummary, crossesMidnight ? $"{range} · ends next day" : $"{range} · local time");
+        ApplyScheduleAppearance();
+
+        if (days.Count == 0)
+        {
+            SetPreviewTransition("No days selected", "Select the days when this window starts.");
+        }
+        else if (state.NextTransition is { } next)
+        {
+            SetPreviewTransition(state.IsAllowed ? "Next lock" : "Next unlock",
+                $"{next:ddd, d MMM} at {FormatInputTime(TimeOnly.FromDateTime(next))}");
+        }
+        else
+        {
+            SetPreviewTransition("No scheduled lock", "Play is allowed all week.");
+        }
+    }
+
+    private void ApplyScheduleAppearance()
+    {
+        _configState.ForeColor = _dirty && _canEdit ? Theme.Warn : Theme.Muted;
+        _windowState.ForeColor = _windowState.Text == "PLAY OPEN" ? Theme.Success : Theme.Muted;
+    }
+
+    private void SetPreviewTransition(string title, string detail)
+    {
+        if (_transitionTitle.Text == title && _transition.Text == detail)
+            return;
+
+        SetCaption(_transitionTitle, title);
+        SetCaption(_transition, detail);
+        _toolTip.SetToolTip(_transition, detail);
     }
 
     private static void SetCaption(Label label, string value)
@@ -355,7 +391,8 @@ public partial class Form1 : Form
     {
         _vaultDetails.Text = details;
         _vaultEmptyTitle.Text = title;
-        _vaultEmptyTitle.ForeColor = tone == StatusTone.Warning ? WorkspaceTheme.Warn : WorkspaceTheme.Text;
+        _vaultStateTone = tone;
+        ApplyVaultStateAppearance();
         _vaultEmptyBody.Text = body;
         _extensions.Visible = false;
         _vaultEmpty.Visible = true;
@@ -419,8 +456,7 @@ public partial class Form1 : Form
                 var row = _extensions.Rows[index];
                 row.Tag = extension;
                 row.Cells[1].ToolTipText = extension.Extension;
-                row.Cells[4].Style.ForeColor = extension.RiskLevel == RiskLevel.Safe ? WorkspaceTheme.Accent
-                    : extension.RiskLevel is RiskLevel.High or RiskLevel.Dangerous ? WorkspaceTheme.Warn : WorkspaceTheme.Muted;
+                ApplyRiskAppearance(row);
             }
             _extensions.ClearSelection();
         }
@@ -432,6 +468,20 @@ public partial class Form1 : Form
         UpdateVaultCount();
         _vaultEmpty.Visible = false;
         _extensions.Visible = true;
+    }
+
+    private void ApplyVaultStateAppearance() =>
+        _vaultEmptyTitle.ForeColor = _vaultStateTone == StatusTone.Warning ? Theme.Warn : Theme.Text;
+
+    private void ApplyRiskAppearance(DataGridViewRow row)
+    {
+        var extension = (ExtensionInfo)row.Tag!;
+        row.Cells["Risk"].Style.ForeColor = extension.RiskLevel switch
+        {
+            RiskLevel.Safe => Theme.Success,
+            RiskLevel.High or RiskLevel.Dangerous => Theme.Warn,
+            _ => Theme.Muted,
+        };
     }
 
     private static string CountSelected(int count) => count == 1 ? "1 type selected" : $"{count} types selected";
@@ -718,14 +768,20 @@ public partial class Form1 : Form
     private void ShowStatus(string message, StatusTone tone = StatusTone.Normal)
     {
         _status.Text = message;
-        _status.ForeColor = tone switch
-        {
-            StatusTone.Success => WorkspaceTheme.Accent,
-            StatusTone.Warning => WorkspaceTheme.Warn,
-            StatusTone.Error => WorkspaceTheme.Error,
-            _ => WorkspaceTheme.Muted,
-        };
+        _statusTone = tone;
+        ApplyStatusAppearance();
         _toolTip.SetToolTip(_status, message);
+    }
+
+    private void ApplyStatusAppearance()
+    {
+        _status.ForeColor = _statusTone switch
+        {
+            StatusTone.Success => Theme.Success,
+            StatusTone.Warning => Theme.Warn,
+            StatusTone.Error => Theme.Error,
+            _ => Theme.Muted,
+        };
     }
 
     private void ShowError(string title, string message)

@@ -9,6 +9,7 @@ public partial class Form1
     private WindowTimeline _timeline = null!;
     private Label _previewMode = null!;
     private Label _windowSummary = null!;
+    private Label _transitionTitle = null!;
     private Label _transition = null!;
     private Label _windowState = null!;
     private Label _configState = null!;
@@ -51,14 +52,14 @@ public partial class Form1
         StartPosition = FormStartPosition.CenterScreen;
         Text = "GameLocker Configuration";
         Font = WorkspaceTheme.Body;
-        ForeColor = WorkspaceTheme.Text;
-        BackColor = WorkspaceTheme.Canvas;
+        ForeColor = Theme.Text;
+        BackColor = Theme.Canvas;
         DoubleBuffered = true;
 
         var root = Grid(1, 3);
-        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 79));
+        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 71));
         root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 66));
+        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 63));
         root.Controls.Add(BuildHeader(), 0, 0);
         root.Controls.Add(BuildWorkspace(), 0, 1);
         root.Controls.Add(BuildActions(), 0, 2);
@@ -66,12 +67,6 @@ public partial class Form1
 
         AdjustRowHeights();
         ResumeLayout();
-    }
-
-    protected override void OnHandleCreated(EventArgs e)
-    {
-        base.OnHandleCreated(e);
-        WorkspaceTheme.UseDarkTitleBar(this);
     }
 
     protected override void OnDpiChanged(DpiChangedEventArgs e)
@@ -82,7 +77,7 @@ public partial class Form1
 
     private void AdjustRowHeights()
     {
-        _folderList.ItemHeight = LogicalToDeviceUnits(48);
+        _folderList.ItemHeight = LogicalToDeviceUnits(47);
         _extensions.RowTemplate.Height = LogicalToDeviceUnits(30);
         _extensions.ColumnHeadersHeight = LogicalToDeviceUnits(28);
         foreach (DataGridViewRow row in _extensions.Rows)
@@ -91,90 +86,123 @@ public partial class Form1
 
     private Control BuildHeader()
     {
-        var header = new Panel { Dock = DockStyle.Fill, Margin = Padding.Empty, BackColor = WorkspaceTheme.Raised };
+        var header = BindBackground(new Panel
+        {
+            Dock = DockStyle.Fill, Margin = Padding.Empty, Padding = new Padding(0, 0, 0, 2),
+        }, theme => theme.Canvas);
         header.Paint += (_, args) =>
         {
-            using var line = new Pen(WorkspaceTheme.Line);
-            args.Graphics.DrawLine(line, 0, header.Height - 1, header.Width, header.Height - 1);
+            var thickness = header.LogicalToDeviceUnits(2);
+            using var line = new SolidBrush(Theme.Pink);
+            args.Graphics.FillRectangle(line, 0, header.Height - thickness, header.Width, thickness);
         };
-        var content = Grid(3, 1, new Padding(22, 0, 22, 0));
-        content.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 58));
+        var content = Grid(3, 1, new Padding(20, 0, 20, 0));
+        content.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 50));
         content.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         content.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-        var logo = new WorkspaceIcon(WorkspaceGlyph.Locker, badge: true)
+        content.Controls.Add(new WorkspaceIcon(WorkspaceGlyph.Locker, accent: true)
         {
-            Size = new Size(43, 43), Anchor = AnchorStyles.Left, TabStop = false,
-        };
-        content.Controls.Add(logo, 0, 0);
+            Size = new Size(39, 42), Anchor = AnchorStyles.Left, TabStop = false, Margin = Padding.Empty,
+        }, 0, 0);
 
-        var identity = Grid(1, 2, new Padding(0, 14, 0, 13));
-        identity.RowStyles.Add(new RowStyle(SizeType.Absolute, 31));
-        identity.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        identity.Controls.Add(Caption("GameLocker", WorkspaceTheme.Brand), 0, 0);
-        identity.Controls.Add(Caption("Configuration", WorkspaceTheme.Small, WorkspaceTheme.Muted), 0, 1);
+        var identity = Grid(3, 1);
+        identity.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        identity.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 27));
+        identity.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        var name = Caption("GameLocker", WorkspaceTheme.Brand);
+        name.AutoSize = true;
+        identity.Controls.Add(name, 0, 0);
+        var rule = BindBackground(new Panel { Width = 1, Height = 28, Anchor = AnchorStyles.None }, theme => theme.ControlLine);
+        identity.Controls.Add(rule, 1, 0);
+        identity.Controls.Add(Caption("Configuration", WorkspaceTheme.Transition, theme => theme.Muted), 2, 0);
         content.Controls.Add(identity, 1, 0);
 
-        _configState = Caption("LOADING CONFIGURATION", WorkspaceTheme.Metadata, WorkspaceTheme.Muted);
-        _configState.AutoSize = true;
-        _configState.Dock = DockStyle.None;
-        _configState.Anchor = AnchorStyles.Right;
-        _configState.Padding = new Padding(10, 6, 10, 6);
-        _configState.BackColor = WorkspaceTheme.Inset;
-        _configState.BorderStyle = BorderStyle.FixedSingle;
-        content.Controls.Add(_configState, 2, 0);
+        var themeSelector = Grid(4, 1);
+        themeSelector.Anchor = AnchorStyles.Right;
+        themeSelector.Size = new Size(257, 34);
+        themeSelector.AccessibleName = "Appearance";
+        themeSelector.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 54));
+        themeSelector.Controls.Add(Caption("Theme", WorkspaceTheme.Strong), 0, 0);
+        var index = 1;
+        foreach (var mode in Enum.GetValues<WorkspaceThemeMode>())
+        {
+            themeSelector.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F / 3));
+            var option = new WorkspaceThemeOption(mode)
+            {
+                Checked = mode == _themeMode, Margin = new Padding(index == 1 ? 0 : 6, 0, 0, 0),
+            };
+            option.CheckedChanged += (_, _) =>
+            {
+                if (option.Checked)
+                    SelectTheme(mode);
+            };
+            themeSelector.Controls.Add(option, index++, 0);
+        }
+        content.Controls.Add(themeSelector, 2, 0);
         header.Controls.Add(content);
         return header;
     }
 
     private Control BuildWorkspace()
     {
-        var viewport = new Panel { Dock = DockStyle.Fill, AutoScroll = true, Margin = Padding.Empty, TabIndex = 0 };
-        var workspace = Grid(2, 1, new Padding(22, 18, 22, 18));
+        var viewport = new Panel { Dock = DockStyle.Fill, AutoScroll = true, Margin = Padding.Empty, TabIndex = 1 };
+        var workspace = Grid(2, 1, new Padding(16, 15, 16, 15));
         workspace.Dock = DockStyle.Top;
-        workspace.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 55));
-        workspace.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 45));
+        workspace.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 59));
+        workspace.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 41));
 
-        var left = Grid(1, 2);
-        left.Margin = new Padding(0, 0, 7, 0);
-        left.RowStyles.Add(new RowStyle(SizeType.Absolute, 328));
-        left.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        left.Controls.Add(BuildSchedule(), 0, 0);
-        var folders = BuildFolders();
-        folders.Margin = new Padding(0, 14, 0, 0);
-        left.Controls.Add(folders, 0, 1);
-        workspace.Controls.Add(left, 0, 0);
+        var schedule = BuildSchedule(out var scheduleLayout);
+        schedule.Margin = new Padding(0, 0, 6, 0);
+        workspace.Controls.Add(schedule, 0, 0);
 
-        var right = Grid(1, 2);
-        right.Margin = new Padding(7, 0, 0, 0);
-        right.TabIndex = 1;
-        right.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        right.RowStyles.Add(new RowStyle(SizeType.Absolute, 106));
-        right.Controls.Add(BuildVault(), 0, 0);
-        var preferences = BuildPreferences();
-        preferences.Margin = new Padding(0, 14, 0, 0);
-        right.Controls.Add(preferences, 0, 1);
-        workspace.Controls.Add(right, 1, 0);
+        var sidebar = Grid(1, 2);
+        sidebar.Margin = new Padding(6, 0, 0, 0);
+        sidebar.TabIndex = 1;
+        sidebar.RowStyles.Add(new RowStyle(SizeType.Absolute, 228));
+        sidebar.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        sidebar.Controls.Add(BuildFolders(), 0, 0);
+        var vault = BuildVault();
+        vault.Margin = new Padding(0, 12, 0, 0);
+        sidebar.Controls.Add(vault, 0, 1);
+        workspace.Controls.Add(sidebar, 1, 0);
 
+        const int minimumWorkspaceHeight = 543;
+        workspace.Height = minimumWorkspaceHeight;
         viewport.Controls.Add(workspace);
-        workspace.Height = 578;
+        var compactRows = new[] { 35, 19, 31, 8, 70, 8, 150 };
+        var normalRows = new[] { 44, 25, 37, 16, 79, 19, 160 };
+        var wasCompact = false;
         viewport.SizeChanged += (_, _) =>
         {
-            var height = Math.Max(viewport.ClientSize.Height, viewport.LogicalToDeviceUnits(578));
+            var height = Math.Max(viewport.ClientSize.Height, viewport.LogicalToDeviceUnits(minimumWorkspaceHeight));
             if (workspace.Height != height)
                 workspace.Height = height;
+
+            var compact = viewport.ClientSize.Height < viewport.LogicalToDeviceUnits(430);
+            if (compact == wasCompact)
+                return;
+
+            wasCompact = compact;
+            var rows = compact ? compactRows : normalRows;
+            scheduleLayout.SuspendLayout();
+            for (var index = 0; index < rows.Length; index++)
+                scheduleLayout.RowStyles[index].Height = scheduleLayout.LogicalToDeviceUnits(rows[index]);
+            scheduleLayout.ResumeLayout();
         };
         return viewport;
     }
 
-    private Control BuildSchedule()
+    private Control BuildSchedule(out TableLayoutPanel layout)
     {
         var panel = Surface();
-        var layout = Grid(1, 7);
-        foreach (var height in new[] { 31, 25, 35, 14, 64, 13 })
+        panel.Padding = new Padding(20, 14, 20, 14);
+        layout = Grid(1, 9);
+        foreach (var height in new[] { 44, 25, 37, 16, 79, 19, 160 })
             layout.RowStyles.Add(new RowStyle(SizeType.Absolute, height));
         layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        layout.Controls.Add(Caption("Gaming schedule", WorkspaceTheme.Section), 0, 0);
-        layout.Controls.Add(Caption("Allowed days", WorkspaceTheme.Small, WorkspaceTheme.Muted), 0, 1);
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 48));
+        layout.Controls.Add(Caption("Gaming schedule", WorkspaceTheme.Schedule), 0, 0);
+        layout.Controls.Add(Caption("Allowed days", WorkspaceTheme.Small, theme => theme.Muted), 0, 1);
 
         var days = Grid(7, 1);
         _dayOptions = new CheckBox[Week.Length];
@@ -186,7 +214,7 @@ public partial class Form1
             {
                 Text = day[..3], AccessibleName = day, Font = WorkspaceTheme.Strong, Dock = DockStyle.Fill,
                 TabIndex = index, Cursor = Cursors.Hand,
-                Margin = new Padding(0, 0, index == Week.Length - 1 ? 0 : 5, 0),
+                Margin = new Padding(0, 0, index == Week.Length - 1 ? 0 : 6, 0),
             };
             option.CheckedChanged += (_, _) => DraftChanged();
             _toolTip.SetToolTip(option, day);
@@ -197,11 +225,18 @@ public partial class Form1
 
         var fields = Grid(3, 1);
         fields.TabIndex = 1;
-        fields.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
-        fields.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 12));
-        fields.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
+        fields.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 64));
+        fields.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 15));
+        fields.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 36));
         var start = BuildField("Start time", "24-hour", out _startInput);
         _startInput.MaxLength = 16;
+        _startInput.TextChanged += (_, _) =>
+        {
+            // Legacy settings can include seven fractional digits. Keep all digits in the single-line field.
+            var font = _startInput.TextLength > 11 ? WorkspaceTheme.PreciseClock : WorkspaceTheme.Clock;
+            if (_startInput.Font != font)
+                _startInput.Font = font;
+        };
         _toolTip.SetToolTip(_startInput, "Enter a local start time, such as 18:30.");
         fields.Controls.Add(start, 0, 0);
         var duration = BuildField("Duration", "hours", out _durationInput, withStepper: true);
@@ -209,83 +244,113 @@ public partial class Form1
         duration.TabIndex = 1;
         fields.Controls.Add(duration, 2, 0);
         layout.Controls.Add(fields, 0, 4);
+        layout.Controls.Add(BuildPreview(), 0, 6);
 
-        var preview = Grid(1, 4, new Padding(11, 6, 11, 4));
-        preview.BackColor = WorkspaceTheme.Inset;
-        preview.RowStyles.Add(new RowStyle(SizeType.Absolute, 19));
-        preview.RowStyles.Add(new RowStyle(SizeType.Absolute, 20));
-        preview.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        _notifications = new WorkspaceCheckBox
+        {
+            Text = "Show lock and unlock notifications", Font = WorkspaceTheme.Body, Dock = DockStyle.Fill,
+            Margin = new Padding(0, 9, 0, 0), Cursor = Cursors.Hand, TabIndex = 2,
+        };
+        _notifications.CheckedChanged += (_, _) => DraftChanged();
+        layout.Controls.Add(_notifications, 0, 8);
+        panel.Controls.Add(layout);
+        return panel;
+    }
+
+    private Control BuildPreview()
+    {
+        var preview = Grid(1, 4);
+        foreach (var height in new[] { 22, 22, 57 })
+            preview.RowStyles.Add(new RowStyle(SizeType.Absolute, height));
         preview.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         var previewHeader = Grid(2, 1);
         previewHeader.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        previewHeader.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 118));
-        _previewMode = Caption("Window preview", WorkspaceTheme.Small, WorkspaceTheme.Muted);
-        _windowState = Caption("", WorkspaceTheme.Metadata, WorkspaceTheme.Accent, ContentAlignment.MiddleRight);
+        previewHeader.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 105));
+        _previewMode = Caption("Window preview", WorkspaceTheme.Small, theme => theme.Muted);
+        _windowState = Caption("", WorkspaceTheme.Metadata, alignment: ContentAlignment.MiddleRight);
         previewHeader.Controls.Add(_previewMode, 0, 0);
         previewHeader.Controls.Add(_windowState, 1, 0);
         preview.Controls.Add(previewHeader, 0, 0);
         _windowSummary = Caption("", WorkspaceTheme.Data);
         preview.Controls.Add(_windowSummary, 0, 1);
-        _timeline = new WindowTimeline
-        {
-            AutoSize = true, Dock = DockStyle.Fill, Margin = new Padding(0, 4, 0, 0), TabStop = false,
-        };
+        _timeline = new WindowTimeline { Dock = DockStyle.Fill, Margin = Padding.Empty, TabStop = false };
         preview.Controls.Add(_timeline, 0, 2);
-        _transition = Caption("", WorkspaceTheme.Small, WorkspaceTheme.Muted);
-        preview.Controls.Add(_transition, 0, 3);
-        layout.Controls.Add(preview, 0, 6);
-        panel.Controls.Add(layout);
-        return panel;
+
+        var transitionBand = BindBackground(new WorkspaceSurface
+        {
+            Dock = DockStyle.Fill, Margin = Padding.Empty, Padding = new Padding(11, 4, 11, 4),
+        }, theme => theme.Raised);
+        var transitionContent = Grid(2, 1);
+        transitionContent.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 34));
+        transitionContent.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        transitionContent.Controls.Add(new WorkspaceIcon(WorkspaceGlyph.Locker, accent: true)
+        {
+            Size = new Size(23, 24), Anchor = AnchorStyles.Left, Margin = Padding.Empty, TabStop = false,
+        }, 0, 0);
+        var transitionLabels = Grid(1, 2);
+        transitionLabels.RowStyles.Add(new RowStyle(SizeType.Absolute, 20));
+        transitionLabels.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        _transitionTitle = Caption("", WorkspaceTheme.Strong, theme => theme.HighContrast ? theme.Text : theme.Pink);
+        _transition = Caption("", WorkspaceTheme.Transition);
+        transitionLabels.Controls.Add(_transitionTitle, 0, 0);
+        transitionLabels.Controls.Add(_transition, 0, 1);
+        transitionContent.Controls.Add(transitionLabels, 1, 0);
+        transitionBand.Controls.Add(transitionContent);
+        preview.Controls.Add(transitionBand, 0, 3);
+        return preview;
     }
 
     private TableLayoutPanel BuildField(string title, string unit, out TextBox input, bool withStepper = false)
     {
         var field = Grid(1, 2);
-        field.RowStyles.Add(new RowStyle(SizeType.Absolute, 24));
+        field.RowStyles.Add(new RowStyle(SizeType.Absolute, 27));
         field.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         var heading = Grid(2, 1);
         heading.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         heading.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-        heading.Controls.Add(Caption(title, WorkspaceTheme.Small, WorkspaceTheme.Text), 0, 0);
-        var unitLabel = Caption(unit, WorkspaceTheme.Metadata, WorkspaceTheme.Muted);
+        heading.Controls.Add(Caption(title, WorkspaceTheme.Transition), 0, 0);
+        var unitLabel = Caption(unit, WorkspaceTheme.Metadata, theme => theme.Muted);
         unitLabel.AutoSize = true;
         heading.Controls.Add(unitLabel, 1, 0);
         field.Controls.Add(heading, 0, 0);
 
-        var surface = new Panel
+        var surface = BindBackground(new Panel
         {
-            Dock = DockStyle.Fill, Margin = Padding.Empty, Padding = new Padding(1), BackColor = WorkspaceTheme.Inset,
-        };
-        var row = Grid(withStepper ? 3 : 1, 1, new Padding(8, 1, withStepper ? 3 : 8, 1));
-        input = new TextBox
+            Dock = DockStyle.Fill, Margin = Padding.Empty, Padding = new Padding(1),
+        }, theme => theme.Inset);
+        var row = Grid(withStepper ? 2 : 1, 1, new Padding(9, 1, withStepper ? 3 : 9, 1));
+        input = BindBackground(new TextBox
         {
-            AccessibleName = title, Font = WorkspaceTheme.Data, BorderStyle = BorderStyle.None,
-            BackColor = WorkspaceTheme.Inset, ForeColor = WorkspaceTheme.Text,
+            AccessibleName = title, Font = WorkspaceTheme.Clock, BorderStyle = BorderStyle.None,
             Anchor = AnchorStyles.Left | AnchorStyles.Right, Margin = Padding.Empty,
-        };
+        }, theme => theme.Inset);
+        BindForeground(input, theme => theme.Text);
+        var textInput = input;
         input.TextChanged += (_, _) => DraftChanged();
         input.GotFocus += (_, _) => surface.Invalidate();
         input.LostFocus += (_, _) => surface.Invalidate();
-        var textInput = input;
         surface.Paint += (_, args) =>
         {
-            using var pen = new Pen(textInput.Focused ? WorkspaceTheme.Accent : WorkspaceTheme.ControlLine);
+            using var pen = new Pen(textInput.Focused ? Theme.Pink : Theme.ControlLine);
             args.Graphics.DrawRectangle(pen, 0, 0, surface.Width - 1, surface.Height - 1);
         };
         row.Controls.Add(input, 0, 0);
         if (withStepper)
         {
             row.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-            row.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 29));
-            row.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 29));
-            _shorter = new WorkspaceButton("−") { Dock = DockStyle.Fill, Margin = new Padding(0, 3, 3, 3),
+            row.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 33));
+            var stepper = Grid(1, 2);
+            stepper.RowStyles.Add(new RowStyle(SizeType.Percent, 50));
+            stepper.RowStyles.Add(new RowStyle(SizeType.Percent, 50));
+            _longer = new WorkspaceButton("+") { Dock = DockStyle.Fill, Margin = new Padding(0, 0, 0, 1),
+                AccessibleName = "Increase duration", TabIndex = 0 };
+            _shorter = new WorkspaceButton("−") { Dock = DockStyle.Fill, Margin = new Padding(0, 1, 0, 0),
                 AccessibleName = "Decrease duration", TabIndex = 1 };
-            _longer = new WorkspaceButton("+") { Dock = DockStyle.Fill, Margin = new Padding(0, 3, 0, 3),
-                AccessibleName = "Increase duration", TabIndex = 2 };
             _shorter.Click += (_, _) => AdjustDuration(-1);
             _longer.Click += (_, _) => AdjustDuration(1);
-            row.Controls.Add(_shorter, 1, 0);
-            row.Controls.Add(_longer, 2, 0);
+            stepper.Controls.Add(_longer, 0, 0);
+            stepper.Controls.Add(_shorter, 0, 1);
+            row.Controls.Add(stepper, 1, 0);
         }
         surface.Controls.Add(row);
         field.Controls.Add(surface, 0, 1);
@@ -295,51 +360,49 @@ public partial class Form1
     private Control BuildFolders()
     {
         var panel = Surface();
-        panel.TabIndex = 1;
-        var layout = Grid(1, 4);
-        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 30));
-        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 27));
+        var layout = Grid(1, 3);
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 40));
         layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 43));
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 42));
 
         var heading = Grid(2, 1);
         heading.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         heading.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         heading.Controls.Add(Caption("Game folders", WorkspaceTheme.Section), 0, 0);
-        _folderCount = Caption("0 folders", WorkspaceTheme.Metadata, WorkspaceTheme.Muted);
+        _folderCount = Caption("0 folders", WorkspaceTheme.Metadata, theme => theme.Muted);
         _folderCount.AutoSize = true;
         heading.Controls.Add(_folderCount, 1, 0);
         layout.Controls.Add(heading, 0, 0);
-        layout.Controls.Add(Caption("Folders GameLocker restricts outside play time.", WorkspaceTheme.Small, WorkspaceTheme.Muted), 0, 1);
 
-        var content = new WorkspaceSurface { Dock = DockStyle.Fill, Margin = Padding.Empty, Padding = new Padding(1),
-            BackColor = WorkspaceTheme.Inset };
-        _folderList = new ListBox
+        var content = BindBackground(new WorkspaceSurface
+        {
+            Dock = DockStyle.Fill, Margin = Padding.Empty, Padding = new Padding(1),
+        }, theme => theme.Inset);
+        _folderList = BindBackground(new ListBox
         {
             AccessibleName = "Game folders", Dock = DockStyle.Fill, DrawMode = DrawMode.OwnerDrawFixed,
-            BorderStyle = BorderStyle.None, IntegralHeight = false, BackColor = WorkspaceTheme.Inset,
-            ForeColor = WorkspaceTheme.Text, TabIndex = 0,
-        };
+            BorderStyle = BorderStyle.None, IntegralHeight = false, TabIndex = 0,
+        }, theme => theme.Inset);
+        BindForeground(_folderList, theme => theme.Text);
         _folderList.DrawItem += DrawFolder;
         _folderList.SelectedIndexChanged += (_, _) => FolderSelectionChanged();
-        _folderEmpty = EmptyPanel(WorkspaceGlyph.Folder, "No game folders", "Use Add folder to choose what GameLocker manages.", out _, out _);
+        _folderEmpty = EmptyPanel(WorkspaceGlyph.Folder, "No game folders", "Add a folder to put it on the schedule.", out _, out _);
         content.Controls.Add(_folderList);
         content.Controls.Add(_folderEmpty);
-        layout.Controls.Add(content, 0, 2);
+        layout.Controls.Add(content, 0, 1);
 
-        var actions = Grid(4, 1, new Padding(0, 9, 0, 0));
+        var actions = Grid(3, 1, new Padding(0, 8, 0, 0));
         actions.TabIndex = 1;
-        actions.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 112));
-        actions.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 88));
-        actions.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        actions.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 94));
+        actions.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 38));
+        actions.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 31));
+        actions.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 31));
         _addFolder = ActionButton(actions, 0, "&Add folder…");
-        _removeFolder = ActionButton(actions, 1, "&Remove");
-        _testLock = ActionButton(actions, 3, "Test &lock", last: true);
+        _testLock = ActionButton(actions, 1, "Test &lock");
+        _removeFolder = ActionButton(actions, 2, "&Remove", last: true);
         _addFolder.Click += AddFolder;
-        _removeFolder.Click += RemoveFolder;
         _testLock.Click += TestLock;
-        layout.Controls.Add(actions, 0, 3);
+        _removeFolder.Click += RemoveFolder;
+        layout.Controls.Add(actions, 0, 2);
         panel.Controls.Add(layout);
         return panel;
     }
@@ -347,19 +410,17 @@ public partial class Form1
     private Control BuildVault()
     {
         var panel = Surface();
-        var layout = Grid(1, 7);
-        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 31));
-        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 28));
-        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 32));
-        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 22));
-        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 28));
+        panel.TabIndex = 1;
+        var layout = Grid(1, 6);
+        foreach (var height in new[] { 36, 28, 23, 22 })
+            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, height));
         layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 43));
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 42));
         layout.Controls.Add(Caption("Vault", WorkspaceTheme.Section), 0, 0);
         _vault = new WorkspaceCheckBox
         {
             Text = "Encrypt selected file types", Font = WorkspaceTheme.Strong, Dock = DockStyle.Fill,
-            TabIndex = 0, Margin = Padding.Empty, BackColor = WorkspaceTheme.Surface, Cursor = Cursors.Hand,
+            TabIndex = 0, Margin = Padding.Empty, Cursor = Cursors.Hand,
         };
         _vault.CheckedChanged += (_, _) =>
         {
@@ -369,19 +430,20 @@ public partial class Form1
             DraftChanged();
         };
         layout.Controls.Add(_vault, 0, 1);
-        layout.Controls.Add(Caption("Adds file encryption when a folder locks.", WorkspaceTheme.Small, WorkspaceTheme.Muted), 0, 2);
 
         _vaultFolder = Caption("", WorkspaceTheme.Strong);
-        _vaultDetails = Caption("", WorkspaceTheme.Metadata, WorkspaceTheme.Muted);
-        layout.Controls.Add(_vaultFolder, 0, 3);
-        layout.Controls.Add(_vaultDetails, 0, 4);
-        var content = new WorkspaceSurface { Dock = DockStyle.Fill, Margin = Padding.Empty, Padding = new Padding(1),
-            BackColor = WorkspaceTheme.Inset, TabIndex = 1 };
+        _vaultDetails = Caption("", WorkspaceTheme.Metadata, theme => theme.Muted);
+        layout.Controls.Add(_vaultFolder, 0, 2);
+        layout.Controls.Add(_vaultDetails, 0, 3);
+        var content = BindBackground(new WorkspaceSurface
+        {
+            Dock = DockStyle.Fill, Margin = Padding.Empty, Padding = new Padding(1), TabIndex = 1,
+        }, theme => theme.Inset);
         _extensions = BuildExtensionGrid();
         _vaultEmpty = EmptyPanel(WorkspaceGlyph.Files, "", "", out _vaultEmptyTitle, out _vaultEmptyBody);
         content.Controls.Add(_extensions);
         content.Controls.Add(_vaultEmpty);
-        layout.Controls.Add(content, 0, 5);
+        layout.Controls.Add(content, 0, 4);
 
         var actions = Grid(3, 1, new Padding(0, 9, 0, 0));
         actions.TabIndex = 2;
@@ -397,7 +459,7 @@ public partial class Form1
         _scan.Click += ScanFolder;
         _selectSaves.Click += (_, _) => SelectExtensions(saveFilesOnly: true);
         _selectNone.Click += (_, _) => SelectExtensions(saveFilesOnly: false);
-        layout.Controls.Add(actions, 0, 6);
+        layout.Controls.Add(actions, 0, 5);
         panel.Controls.Add(layout);
         return panel;
     }
@@ -407,7 +469,7 @@ public partial class Form1
         var grid = new DataGridView
         {
             AccessibleName = "Vault file types", Dock = DockStyle.Fill, Margin = Padding.Empty,
-            BackgroundColor = WorkspaceTheme.Inset, GridColor = WorkspaceTheme.Line, BorderStyle = BorderStyle.None,
+            BorderStyle = BorderStyle.None,
             CellBorderStyle = DataGridViewCellBorderStyle.SingleHorizontal,
             ColumnHeadersBorderStyle = DataGridViewHeaderBorderStyle.Single,
             EnableHeadersVisualStyles = false, RowHeadersVisible = false,
@@ -415,17 +477,8 @@ public partial class Form1
             AllowUserToResizeRows = false, AllowUserToResizeColumns = false, MultiSelect = false,
             AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill, ColumnHeadersHeightSizeMode = DataGridViewColumnHeadersHeightSizeMode.DisableResizing,
             SelectionMode = DataGridViewSelectionMode.FullRowSelect, StandardTab = true,
-            DefaultCellStyle = new DataGridViewCellStyle
-            {
-                BackColor = WorkspaceTheme.Inset, ForeColor = WorkspaceTheme.Text, Font = WorkspaceTheme.Small,
-                SelectionBackColor = WorkspaceTheme.Selected, SelectionForeColor = WorkspaceTheme.OnSelected,
-            },
-            ColumnHeadersDefaultCellStyle = new DataGridViewCellStyle
-            {
-                BackColor = WorkspaceTheme.Raised, ForeColor = WorkspaceTheme.Muted, Font = WorkspaceTheme.Metadata,
-                SelectionBackColor = WorkspaceTheme.Raised, SelectionForeColor = WorkspaceTheme.Text,
-            },
         };
+        ApplyGridAppearance(grid);
         grid.Columns.Add(new DataGridViewCheckBoxColumn
         {
             Name = "Encrypt", HeaderText = "Use", FillWeight = 12, MinimumWidth = 34,
@@ -460,37 +513,47 @@ public partial class Form1
         return grid;
     }
 
-    private Control BuildPreferences()
+    private void ApplyGridAppearance(DataGridView grid)
     {
-        var panel = Surface();
-        panel.TabIndex = 1;
-        var layout = Grid(1, 2);
-        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 27));
-        layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        layout.Controls.Add(Caption("Preferences", WorkspaceTheme.Section), 0, 0);
-        _notifications = new WorkspaceCheckBox
+        grid.BackgroundColor = Theme.Inset;
+        grid.GridColor = Theme.Line;
+        grid.DefaultCellStyle = new DataGridViewCellStyle
         {
-            Text = "Show lock and unlock notifications", Font = WorkspaceTheme.Body, Dock = DockStyle.Fill,
-            Margin = Padding.Empty, BackColor = WorkspaceTheme.Surface, Cursor = Cursors.Hand,
+            Font = WorkspaceTheme.Small,
+            BackColor = Theme.Inset, ForeColor = Theme.Text,
+            SelectionBackColor = Theme.Selected, SelectionForeColor = Theme.OnSelected,
+            Alignment = DataGridViewContentAlignment.MiddleLeft, WrapMode = DataGridViewTriState.False,
         };
-        _notifications.CheckedChanged += (_, _) => DraftChanged();
-        layout.Controls.Add(_notifications, 0, 1);
-        panel.Controls.Add(layout);
-        return panel;
+        var headingText = Theme.HighContrast ? SystemColors.ControlText : Theme.Muted;
+        grid.ColumnHeadersDefaultCellStyle = new DataGridViewCellStyle
+        {
+            Font = WorkspaceTheme.Metadata,
+            BackColor = Theme.Raised, ForeColor = headingText,
+            SelectionBackColor = Theme.Raised, SelectionForeColor = headingText,
+            Alignment = DataGridViewContentAlignment.MiddleLeft, WrapMode = DataGridViewTriState.False,
+        };
     }
 
     private Control BuildActions()
     {
-        var panel = new WorkspaceSurface { Dock = DockStyle.Fill, Margin = Padding.Empty, TabIndex = 1 };
-        var bar = Grid(4, 1, new Padding(22, 12, 22, 12));
+        var panel = BindBackground(new WorkspaceSurface
+        {
+            Dock = DockStyle.Fill, Margin = Padding.Empty, TabIndex = 2,
+        }, theme => theme.Canvas);
+        var bar = Grid(4, 1, new Padding(16, 10, 16, 10));
         bar.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         bar.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         bar.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 147));
         bar.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 171));
         bar.Controls.Add(BuildLinks(), 0, 0);
-        _status = Caption("Loading configuration…", WorkspaceTheme.Small, WorkspaceTheme.Muted);
-        _status.Margin = new Padding(16, 0, 14, 0);
-        bar.Controls.Add(_status, 1, 0);
+        var feedback = Grid(1, 2, new Padding(12, 0, 13, 0));
+        feedback.RowStyles.Add(new RowStyle(SizeType.Absolute, 19));
+        feedback.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        _configState = Caption("Loading configuration", WorkspaceTheme.Strong);
+        _status = Caption("", WorkspaceTheme.Small);
+        feedback.Controls.Add(_configState, 0, 0);
+        feedback.Controls.Add(_status, 0, 1);
+        bar.Controls.Add(feedback, 1, 0);
         _clear = ActionButton(bar, 2, "Clear configuration", danger: true);
         _save = ActionButton(bar, 3, "&Save configuration", primary: true, last: true);
         _clear.Click += ClearConfiguration;
@@ -511,9 +574,10 @@ public partial class Form1
         {
             var control = new WorkspaceButton(string.Empty)
             {
-                Size = new Size(40, 36), Margin = new Padding(0, 0, 6, 0), Image = link.Logo,
+                Size = new Size(38, 36), Margin = new Padding(0, 0, 6, 0), Image = link.Logo(Theme),
                 AccessibleRole = AccessibleRole.Link, AccessibleName = $"Open {link.Label} in your browser",
             };
+            _appearanceBindings.Add(() => control.Image = link.Logo(Theme));
             control.Click += (_, _) => OpenProjectLink(link);
             _toolTip.SetToolTip(control, link.Uri is null ? link.Label : $"{link.Label}\n{link.Uri.AbsoluteUri}");
             links.Controls.Add(control);
@@ -521,8 +585,11 @@ public partial class Form1
         return links;
     }
 
-    private static WorkspaceSurface Surface() =>
-        new() { Dock = DockStyle.Fill, Margin = Padding.Empty, Padding = new Padding(15, 12, 15, 12) };
+    private WorkspaceSurface Surface() =>
+        BindBackground(new WorkspaceSurface
+        {
+            Dock = DockStyle.Fill, Margin = Padding.Empty, Padding = new Padding(13, 11, 13, 11),
+        }, theme => theme.Surface);
 
     private static TableLayoutPanel Grid(int columns, int rows, Padding padding = default)
     {
@@ -537,12 +604,18 @@ public partial class Form1
         return grid;
     }
 
-    private static Label Caption(string text, Font font, Color? color = null,
-        ContentAlignment alignment = ContentAlignment.MiddleLeft) => new()
+    private Label Caption(string text, Font font, Func<WorkspaceTheme, Color>? color = null,
+        ContentAlignment alignment = ContentAlignment.MiddleLeft)
     {
-        Text = text, Font = font, ForeColor = color ?? WorkspaceTheme.Text, Dock = DockStyle.Fill,
-        Margin = Padding.Empty, TextAlign = alignment, AutoEllipsis = true, UseMnemonic = false,
-    };
+        var label = new Label
+        {
+            Text = text, Font = font, Dock = DockStyle.Fill, Margin = Padding.Empty,
+            TextAlign = alignment, AutoEllipsis = true, UseMnemonic = false,
+        };
+        if (color is not null)
+            BindForeground(label, color);
+        return label;
+    }
 
     private static Button ActionButton(TableLayoutPanel layout, int column, string title,
         bool primary = false, bool danger = false, bool last = false)
@@ -555,19 +628,19 @@ public partial class Form1
         return button;
     }
 
-    private static Panel EmptyPanel(WorkspaceGlyph glyph, string title, string body, out Label heading, out Label details)
+    private Panel EmptyPanel(WorkspaceGlyph glyph, string title, string body, out Label heading, out Label details)
     {
-        var panel = new Panel
+        var panel = BindBackground(new Panel
         {
-            Dock = DockStyle.Fill, Margin = Padding.Empty, BackColor = WorkspaceTheme.Inset, TabStop = false,
-        };
+            Dock = DockStyle.Fill, Margin = Padding.Empty, TabStop = false,
+        }, theme => theme.Inset);
         var content = Grid(1, 3, new Padding(5, 0, 5, 0));
         content.RowStyles.Add(new RowStyle(SizeType.Absolute, 23));
         content.RowStyles.Add(new RowStyle(SizeType.Absolute, 20));
         content.RowStyles.Add(new RowStyle(SizeType.Absolute, 20));
         content.Controls.Add(new WorkspaceIcon(glyph) { Size = new Size(25, 23), Anchor = AnchorStyles.None, TabStop = false }, 0, 0);
         heading = Caption(title, WorkspaceTheme.Strong, alignment: ContentAlignment.MiddleCenter);
-        details = Caption(body, WorkspaceTheme.Small, WorkspaceTheme.Muted, ContentAlignment.TopCenter);
+        details = Caption(body, WorkspaceTheme.Small, theme => theme.Muted, ContentAlignment.TopCenter);
         content.Controls.Add(heading, 0, 1);
         content.Controls.Add(details, 0, 2);
         panel.Controls.Add(content);
@@ -588,16 +661,17 @@ public partial class Form1
             return;
 
         var selected = (e.State & DrawItemState.Selected) != 0;
-        var background = selected ? WorkspaceTheme.Selected : WorkspaceTheme.Inset;
-        var foreground = selected ? WorkspaceTheme.OnSelected : WorkspaceTheme.Text;
+        var background = selected ? Theme.Selected : Theme.Inset;
+        var foreground = selected ? Theme.OnSelected : Theme.Text;
         using var fill = new SolidBrush(background);
-        using var divider = new Pen(WorkspaceTheme.Line);
+        using var divider = new Pen(Theme.Line);
         e.Graphics.FillRectangle(fill, e.Bounds);
         e.Graphics.DrawLine(divider, e.Bounds.Left, e.Bounds.Bottom - 1, e.Bounds.Right, e.Bounds.Bottom - 1);
         var glyphSize = LogicalToDeviceUnits(20);
-        WorkspaceTheme.DrawGlyph(e.Graphics, WorkspaceGlyph.Folder, new Rectangle(
-            e.Bounds.Left + LogicalToDeviceUnits(11), e.Bounds.Top + (e.Bounds.Height - glyphSize) / 2,
-            glyphSize, glyphSize), selected ? foreground : WorkspaceTheme.Muted);
+        var glyphColor = Theme.HighContrast ? foreground : Theme.Yellow;
+        WorkspacePaint.Glyph(e.Graphics, WorkspaceGlyph.Folder, new Rectangle(
+            e.Bounds.Left + LogicalToDeviceUnits(10), e.Bounds.Top + (e.Bounds.Height - glyphSize) / 2,
+            glyphSize, glyphSize), glyphColor, Theme.HighContrast ? background : Theme.OnYellow);
         var textLeft = e.Bounds.Left + LogicalToDeviceUnits(42);
         var textRight = e.Bounds.Right - LogicalToDeviceUnits(9);
         var textTop = e.Bounds.Top + LogicalToDeviceUnits(5);
@@ -607,7 +681,7 @@ public partial class Form1
             Rectangle.FromLTRB(textLeft, textTop, textRight, split), foreground, flags | TextFormatFlags.EndEllipsis);
         TextRenderer.DrawText(e.Graphics, path, WorkspaceTheme.Metadata,
             Rectangle.FromLTRB(textLeft, split, textRight, e.Bounds.Bottom - LogicalToDeviceUnits(5)),
-            selected ? foreground : WorkspaceTheme.Muted, flags | TextFormatFlags.PathEllipsis);
+            selected ? foreground : Theme.Muted, flags | TextFormatFlags.PathEllipsis);
         if ((e.State & DrawItemState.Focus) != 0)
             e.DrawFocusRectangle();
     }
