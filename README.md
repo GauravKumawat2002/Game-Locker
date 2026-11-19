@@ -29,11 +29,10 @@ A Windows system service + configuration UI application that enforces a **game a
 
 ### 🎯 **Quick Start**
 
-1. Download `GameLocker-Installer-v1.1.0.zip`
-2. Extract to temporary folder
-3. Right-click `Setup.bat` → "Run as administrator"
-4. Open "GameLocker Configuration" from Start Menu
-5. Add folder → Click "Scan Extensions" → Select safe file types → Save!
+1. Open `GameLocker-Installer-v1.1.0.exe` and approve the Windows administrator prompt.
+2. Finish setup and open **GameLocker Configuration**.
+3. Add a game folder, choose allowed days, a start time and a duration, then save.
+4. To use vault encryption, enable it and choose the file extensions for that folder.
 
 ---
 
@@ -104,25 +103,9 @@ GameLocker/
 
 ### **Option 1: Use the Complete Installer (Recommended)**
 
-1. **Download** the installer package:
-
-    ```
-    GameLocker-Installer-v1.1.0.zip (~115 MB, includes .NET 8.0 Runtime)
-    ```
-
-2. **Extract** to any temporary folder
-
-3. **Install** as Administrator:
-
-    ```batch
-    Right-click Setup.bat → "Run as administrator"
-    ```
-
-4. **Configure** your games:
-    - Launch "GameLocker Configuration" from Start Menu
-    - Add your game folder paths
-    - Set your gaming schedule
-    - Service automatically enforces your rules!
+1. Open the EXE installer. If you downloaded the ZIP, extract it and double-click `Setup.bat`.
+2. Approve the Windows administrator prompt and finish setup. Both packages include the runtime.
+3. Open **GameLocker Configuration** from the Start menu, add your game folder, and save your allowed days, start time and duration.
 
 ### **Option 2: Build from Source**
 

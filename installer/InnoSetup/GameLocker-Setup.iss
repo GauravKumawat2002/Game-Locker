@@ -72,18 +72,6 @@ Name: "{group}\Uninstall {#MyAppName}"; Filename: "{uninstallexe}"
 Name: "{autodesktop}\{#MyAppName} Configuration"; Filename: "{app}\ConfigUI\{#MyAppConfigExeName}"; Tasks: desktopicon
 
 [Run]
-; Lock down the data directory BEFORE the service starts. Well-known SIDs are used so this is
-; independent of the display language: S-1-5-18 = LocalSystem, S-1-5-32-544 = Administrators.
-; /inheritance:r removes the inherited grants that would otherwise let standard users write here.
-Filename: "icacls.exe"; Parameters: """{commonappdata}\{#MyAppName}"" /inheritance:r /grant *S-1-5-18:(OI)(CI)F /grant *S-1-5-32-544:(OI)(CI)F"; Flags: runhidden waituntilterminated
-Filename: "icacls.exe"; Parameters: """{app}\Logs"" /inheritance:r /grant *S-1-5-18:(OI)(CI)F /grant *S-1-5-32-544:(OI)(CI)F"; Flags: runhidden waituntilterminated
-
-; Install and start the Windows Service
-Filename: "sc.exe"; Parameters: "create GameLockerService binPath= ""{app}\Service\{#MyAppServiceExeName}"" start= auto DisplayName= ""GameLocker Service"""; Flags: runhidden waituntilterminated; Check: not HasCanonicalService
-Filename: "sc.exe"; Parameters: "config GameLockerService binPath= ""{app}\Service\{#MyAppServiceExeName}"" start= auto DisplayName= ""GameLocker Service"""; Flags: runhidden waituntilterminated; Check: HasCanonicalService
-Filename: "sc.exe"; Parameters: "description GameLockerService ""Automatically locks and unlocks game folders based on configured schedules."""; Flags: runhidden waituntilterminated
-Filename: "sc.exe"; Parameters: "failure GameLockerService reset= 30 actions= restart/5000/restart/10000/restart/15000"; Flags: runhidden waituntilterminated
-Filename: "sc.exe"; Parameters: "start GameLockerService"; Flags: runhidden waituntilterminated; Tasks: startservice
 ; Launch Config UI with Setup's elevated token.
 Filename: "{app}\ConfigUI\{#MyAppConfigExeName}"; Description: "{cm:LaunchProgram,{#StringChange(MyAppName, '&', '&&')} Configuration}"; Flags: nowait postinstall runascurrentuser skipifsilent
 
@@ -170,13 +158,48 @@ begin
   end;
 end;
 
+procedure RunInstallCommand(FileName, Arguments, FailureMessage: String);
+var
+  ExitCode: Integer;
+begin
+  if not Exec(ExpandConstant('{sys}\' + FileName), Arguments, '', SW_HIDE,
+    ewWaitUntilTerminated, ExitCode) then
+    RaiseException(FailureMessage + ' ' + SysErrorMessage(ExitCode));
+  if ExitCode <> 0 then
+    RaiseException(FailureMessage + ' Exit code ' + IntToStr(ExitCode) + '.');
+end;
+
 procedure CurStepChanged(CurStep: TSetupStep);
 var
   ConfigData: AnsiString;
-  ConfigFile: String;
+  ConfigFile, Operation, ServicePath: String;
 begin
   if CurStep = ssPostInstall then
   begin
+    // Secure application data before the LocalSystem service can read it.
+    RunInstallCommand('icacls.exe',
+      '"' + ExpandConstant('{commonappdata}\{#MyAppName}') +
+      '" /inheritance:r /grant *S-1-5-18:(OI)(CI)F /grant *S-1-5-32-544:(OI)(CI)F',
+      'GameLocker could not secure its data directory.');
+    RunInstallCommand('icacls.exe',
+      '"' + ExpandConstant('{app}\Logs') +
+      '" /inheritance:r /grant *S-1-5-18:(OI)(CI)F /grant *S-1-5-32-544:(OI)(CI)F',
+      'GameLocker could not secure its log directory.');
+
+    if HasCanonicalService() then
+      Operation := 'config'
+    else
+      Operation := 'create';
+    ServicePath := ExpandConstant('{app}\Service\{#MyAppServiceExeName}');
+    RunInstallCommand('sc.exe', Operation + ' GameLockerService binPath= "\"' +
+      ServicePath + '\"" start= auto DisplayName= "GameLocker Service"',
+      'GameLocker could not register its Windows service.');
+    RunInstallCommand('sc.exe',
+      'description GameLockerService "Automatically locks and unlocks game folders based on configured schedules."',
+      'GameLocker could not set its Windows service description.');
+    RunInstallCommand('sc.exe', 'failure GameLockerService reset= 30 actions= restart/5000/restart/10000/restart/15000',
+      'GameLocker could not configure its Windows service recovery.');
+
     // Create service configuration file
     ConfigFile := ExpandConstant('{commonappdata}\{#MyAppName}\service-config.json');
     ConfigData := '{'#13#10 +
@@ -191,5 +214,8 @@ begin
     
     ForceDirectories(ExtractFileDir(ConfigFile));
     SaveStringToFile(ConfigFile, ConfigData, False);
+
+    if WizardIsTaskSelected('startservice') then
+      RunInstallCommand('sc.exe', 'start GameLockerService', 'GameLocker could not start its Windows service.');
   end;
 end;

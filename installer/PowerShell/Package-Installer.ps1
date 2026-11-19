@@ -45,9 +45,9 @@ $readme = @'
 ## Installation Instructions
 
 1. Extract this package to any temporary location
-2. Right-click on 'Setup.bat' and select "Run as administrator"
-3. Follow the installation prompts
-4. Launch "GameLocker Configuration" from the Start Menu to configure your game folders
+2. Double-click Setup.bat and approve the Windows administrator prompt
+3. Open GameLocker Configuration from the Start menu
+4. Add a game folder, choose the allowed days and hours, and save
 
 ## What Gets Installed
 
@@ -91,6 +91,6 @@ Write-Host "Package location: $((Resolve-Path $OutputPath).Path)" -ForegroundCol
 Write-Host ""
 Write-Host "To install GameLocker:" -ForegroundColor Cyan
 Write-Host "  1. Navigate to the package directory" -ForegroundColor Gray
-Write-Host "  2. Right-click Setup.bat and 'Run as administrator'" -ForegroundColor Gray
-Write-Host "  3. Follow the installation prompts" -ForegroundColor Gray
+Write-Host "  2. Double-click Setup.bat and approve the administrator prompt" -ForegroundColor Gray
+Write-Host "  3. Open GameLocker Configuration from the Start menu" -ForegroundColor Gray
 Write-Host ""

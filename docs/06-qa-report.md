@@ -36,3 +36,17 @@ The audit covers GameLocker's Windows service, configuration app, NTFS lock and 
 - ACL preflight reads filesystem metadata and permissions and leaves file contents unchanged in ACL-only mode. The lock depends on compatible NTFS inheritance. Windows owners can retain implicit permission-management rights, and the lock is intended for scheduling ordinary access. To exercise the 10 skipped ACL cases, run `dotnet test tests/GameLocker.Tests/GameLocker.Tests.csproj --filter "Category=RequiresAdmin"` from an elevated Windows terminal. Actual service installation and uninstall and end-to-end desktop interaction also require an elevated Windows test session.
 - Desktop automation could not start in this session, so GUI verification covered source, build, and startup. Windows notification delivery to the interactive user and the full visual workflow remain unverified.
 - Interruption coverage verifies journal replay from persisted intermediate states. It does not include hardware power-loss tests.
+
+## Installed Windows QA
+
+On November 19, 2026, the EXE installer created and started the service on a Windows desktop. The test used a disposable NTFS directory with a synthetic game process, a 256-byte save, and an unselected asset. It used the installed service throughout and restored the test folder before clearing the test schedule.
+
+| Scenario | Result on the baseline installation |
+| --- | --- |
+| Opening and cutoff within an allowed day | The folder stayed locked before the opening and unlocked 8.4 seconds after it. It locked 3.0 seconds after the closing boundary. |
+| Already-running game at cutoff | The synthetic process stayed alive after GameLocker locked its folder. |
+| Excluded day | The service locked the folder even though the current clock time was in the configured hours. |
+| ACL-only mode | Locking left file bytes unchanged. Unlock and configuration removal restored the captured ACL. |
+| Vault mode | Only `.sav` moved to ciphertext. The save and untouched asset matched their original SHA-256 digests after unlock, and the original ACL was restored. |
+
+The follow-up vault regression exercises files held open with delete sharing. Encryption and decryption keep the open source intact until its reader releases it. The retry completes and restores the original save bytes.

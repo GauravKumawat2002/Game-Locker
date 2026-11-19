@@ -1,34 +1,23 @@
 @echo off
+setlocal
 echo ========================================
-echo     GameLocker Setup (Administrator)
+echo           GameLocker Setup
 echo ========================================
 echo.
 
-:: Check for admin rights
-net session >nul 2>&1
-if %errorLevel% neq 0 (
-    echo This installer requires Administrator privileges.
-    echo Please right-click and select "Run as administrator"
-    echo.
-    pause
-    exit /b 1
-)
-
-:: Change to installer directory
-cd /d "%~dp0"
-
-:: Run PowerShell installer
-echo Starting GameLocker installation...
+set "GAMELOCKER_SETUP_SCRIPT=%~dp0GameLocker-Setup.ps1"
+echo Approve the Windows administrator prompt when it appears.
 echo.
-powershell.exe -ExecutionPolicy Bypass -File "GameLocker-Setup.ps1"
+powershell.exe -NoProfile -Command "$ErrorActionPreference = 'Stop'; try { $script = $env:GAMELOCKER_SETUP_SCRIPT; $principal = [Security.Principal.WindowsPrincipal]::new([Security.Principal.WindowsIdentity]::GetCurrent()); $options = @{ FilePath = Join-Path $PSHOME 'powershell.exe'; ArgumentList = '-NoProfile -ExecutionPolicy Bypass -File ' + [char]34 + $script + [char]34 + ' -Silent'; PassThru = $true; Wait = $true }; if (!$principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) { $options.Verb = 'RunAs' }; $process = Start-Process @options; exit $process.ExitCode } catch { Write-Host $_.Exception.Message; exit 1 }"
 set "setupResult=%errorLevel%"
 
 if %setupResult% equ 0 (
     echo.
     echo Installation completed successfully!
+    echo Open GameLocker Configuration from the Start menu.
 ) else (
     echo.
-    echo Installation failed. Check the error messages above.
+    echo GameLocker setup did not complete.
 )
 
 pause

@@ -143,9 +143,10 @@ function Install-Service {
     }
     
     $operation = if (Get-Service -Name $ServiceName -ErrorAction SilentlyContinue) { 'config' } else { 'create' }
-    $createResult = sc.exe $operation $ServiceName binpath= "`"$serviceExePath`"" start= auto DisplayName= "GameLocker Service" 2>&1
-    if ($LASTEXITCODE -ne 0) {
-        throw "Failed to create service: $createResult"
+    $arguments = '{0} {1} binPath= "\"{2}\"" start= auto DisplayName= "GameLocker Service"' -f $operation, $ServiceName, $serviceExePath
+    $setupService = Start-Process -FilePath (Join-Path $env:WINDIR 'System32/sc.exe') -ArgumentList $arguments -WindowStyle Hidden -PassThru -Wait
+    if ($setupService.ExitCode -ne 0) {
+        throw "Could not register the GameLocker service. Exit code: $($setupService.ExitCode)."
     }
     
     # Set service description

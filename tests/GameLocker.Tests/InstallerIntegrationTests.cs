@@ -4,6 +4,7 @@ using GameLocker.Common.Models;
 using GameLocker.Common.Security;
 using GameLocker.Common.Services;
 using GameLocker.Common.State;
+using Microsoft.Win32;
 using ServiceController = System.ServiceProcess.ServiceController;
 
 namespace GameLocker.Tests;
@@ -40,6 +41,10 @@ public sealed class InstallerIntegrationTests
         {
             await InstallAsync(package, fixture, installFolder);
             await EventuallyAsync(ServiceManager.IsServiceRunning, "The installed Windows service did not start.");
+            var executable = Path.Combine(installFolder, "Service", "GameLocker.Service.exe");
+            var imagePath = Registry.GetValue(
+                @"HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Services\GameLockerService", "ImagePath", null);
+            Assert.Equal($"\"{executable}\"", imagePath as string, ignoreCase: true);
 
             await config.SaveConfigAsync(new GameLockerConfig
             {
