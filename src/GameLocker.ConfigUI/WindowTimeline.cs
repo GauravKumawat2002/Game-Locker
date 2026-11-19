@@ -12,7 +12,7 @@ internal sealed class WindowTimeline : Control
     {
         DoubleBuffered = true;
         ResizeRedraw = true;
-        Font = WorkspaceTheme.Metadata;
+        Font = WorkspaceTheme.Ruler;
         AccessibleRole = AccessibleRole.Graphic;
         AccessibleName = "24-hour schedule ruler";
     }
@@ -33,19 +33,16 @@ internal sealed class WindowTimeline : Control
         base.OnPaint(e);
         var theme = WorkspaceTheme.For(this);
         var label = TextRenderer.MeasureText(e.Graphics, Ticks[0], Font, Size.Empty, TickFormat);
-        var left = (label.Width + 1) / 2 + LogicalToDeviceUnits(2);
+        var left = Math.Max(LogicalToDeviceUnits(22), (label.Width + 1) / 2);
         var right = Width - left;
         if (right <= left)
             return;
 
-        var trackTop = LogicalToDeviceUnits(18);
-        var trackHeight = LogicalToDeviceUnits(9);
-        using var inactive = new SolidBrush(theme.Line);
+        var trackTop = LogicalToDeviceUnits(53);
+        using var ruler = new Pen(theme.Text, LogicalToDeviceUnits(2));
         using var interval = new SolidBrush(theme.Yellow);
-        using var activeOutline = new Pen(theme.OnYellow);
         using var activePoint = new SolidBrush(theme.HighContrast ? theme.Text : theme.Pink);
-        using var tick = new Pen(theme.ControlLine);
-        e.Graphics.FillRectangle(inactive, left, trackTop, right - left, trackHeight);
+        e.Graphics.DrawLine(ruler, left, trackTop, right, trackTop);
 
         if (_hasDays)
         {
@@ -56,21 +53,29 @@ internal sealed class WindowTimeline : Control
                 DrawSpan(0, end - 24);
 
             var x = (int)Math.Round(Position(start));
-            var side = LogicalToDeviceUnits(5);
-            Point[] marker = [new(x - side, trackTop - 2 * side), new(x + side, trackTop - 2 * side), new(x, trackTop)];
+            var side = LogicalToDeviceUnits(11);
+            var markerTop = trackTop - LogicalToDeviceUnits(40);
+            Point[] marker = [new(x - side, markerTop), new(x + side, markerTop), new(x, markerTop + LogicalToDeviceUnits(14))];
             e.Graphics.FillPolygon(activePoint, marker);
+
+            var endLabel = end == 24 ? "24:00" : _start.AddHours(_durationHours).ToString("HH':'mm");
+            var range = $"{_start:HH':'mm} – {endLabel}";
+            var textWidth = TextRenderer.MeasureText(e.Graphics, range, Font, Size.Empty, TickFormat).Width;
+            var width = Math.Min(Width, textWidth + LogicalToDeviceUnits(12));
+            var height = LogicalToDeviceUnits(24);
+            var badge = new Rectangle(Math.Clamp(x, 0, Width - width), trackTop - height, width, height);
+            e.Graphics.FillRectangle(interval, badge);
+            TextRenderer.DrawText(e.Graphics, range, Font, badge, theme.OnYellow,
+                TickFormat | TextFormatFlags.VerticalCenter | TextFormatFlags.HorizontalCenter);
         }
 
-        for (var hour = 0; hour <= 24; hour++)
+        for (var hour = 0; hour <= 24; hour += 6)
         {
             var x = (int)Math.Round(Position(hour));
-            var major = hour % 6 == 0;
-            var length = LogicalToDeviceUnits(major ? 8 : 3);
-            e.Graphics.DrawLine(tick, x, trackTop + trackHeight, x, trackTop + trackHeight + length);
-            if (major)
-                TextRenderer.DrawText(e.Graphics, Ticks[hour / 6], Font,
-                    new Point(x - label.Width / 2, trackTop + trackHeight + length + LogicalToDeviceUnits(4)),
-                    theme.Text, TickFormat);
+            var length = LogicalToDeviceUnits(9);
+            e.Graphics.DrawLine(ruler, x, trackTop - length, x, trackTop + length);
+            TextRenderer.DrawText(e.Graphics, Ticks[hour / 6], Font,
+                new Point(x - label.Width / 2, trackTop + LogicalToDeviceUnits(15)), theme.Text, TickFormat);
         }
 
         float Position(double hour) => left + (float)((right - left) * hour / 24);
@@ -82,9 +87,8 @@ internal sealed class WindowTimeline : Control
             if (width <= 0)
                 return;
 
-            e.Graphics.FillRectangle(interval, x, trackTop, width, trackHeight);
-            if (width > 1)
-                e.Graphics.DrawRectangle(activeOutline, x, trackTop, width, trackHeight - 1);
+            e.Graphics.FillRectangle(interval, x, trackTop - 1, width, LogicalToDeviceUnits(2));
         }
     }
+
 }

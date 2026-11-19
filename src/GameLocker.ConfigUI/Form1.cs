@@ -58,6 +58,8 @@ public partial class Form1 : Form
         {
             _toolTip.Dispose();
             _scheduleTimer.Dispose();
+            foreach (var menu in _menus)
+                menu.Dispose();
         }
         base.Dispose(disposing);
     }
@@ -83,7 +85,7 @@ public partial class Form1 : Form
         else if (result.IsDamaged)
             ShowError("Configuration unavailable", $"Restore the saved configuration before making changes.\n\n{result.Error}");
         else if (result.IsLoaded)
-            ShowStatus("Configuration loaded.");
+            ShowStatus("");
         else
             ShowStatus("Choose your schedule and add a game folder.");
     }
@@ -138,6 +140,15 @@ public partial class Form1 : Form
 
     private List<DayOfWeek> ReadDays() => Week.Where((_, index) => _dayOptions[index].Checked).ToList();
 
+    private void AdjustStart(int minutes)
+    {
+        if (_startInput.ReadOnly)
+            return;
+
+        var start = TryReadStart(out var value) ? value : _config.StartTime;
+        _startInput.Text = FormatInputTime(start.AddMinutes(minutes));
+    }
+
     private void AdjustDuration(int change)
     {
         if (_durationInput.ReadOnly)
@@ -169,8 +180,7 @@ public partial class Form1 : Form
 
         SetCaption(_configState, !_loaded ? "Loading configuration"
             : !_canEdit ? "Read only"
-            : _dirty ? "Unsaved changes"
-            : _hasSavedConfig ? "Saved configuration" : "New configuration");
+            : _dirty ? "Unsaved changes" : "");
         ApplyScheduleAppearance();
         UpdateEditControls();
         UpdatePreview();
@@ -181,15 +191,11 @@ public partial class Form1 : Form
         if (_populating)
             return;
 
-        SetCaption(_previewMode, _dirty ? "Draft preview" : _hasSavedConfig ? "Saved schedule" : "Window preview");
         if (!TryReadStart(out var start) || !TryReadDuration(out var duration))
         {
             _timeline.SetWindow(default, 0, false);
             _timeline.AccessibleDescription = "The time window is incomplete.";
-            SetCaption(_windowState, "");
-            _windowSummary.Font = WorkspaceTheme.Data;
-            SetCaption(_windowSummary, "Incomplete time window");
-            SetPreviewTransition("Check the time window", "Use a 24-hour start and a duration of 1–24 hours.");
+            SetPreviewTransition("Incomplete time window", "Use a 24-hour start and a duration of 1–24 hours.");
             return;
         }
 
@@ -203,11 +209,6 @@ public partial class Form1 : Form
         _timeline.AccessibleDescription = days.Count == 0 ? "Select the days when this window starts."
             : crossesMidnight ? $"Allowed play time {range}, ending the next day." : $"Allowed play time {range}.";
         var state = schedule.GetScheduleState(DateTime.Now);
-        SetCaption(_windowState, days.Count == 0 ? "" : state.IsAllowed ? "PLAY OPEN" : "PLAY CLOSED");
-        _windowSummary.Font = start.Ticks % TimeSpan.TicksPerSecond == 0
-            ? WorkspaceTheme.Data : WorkspaceTheme.Metadata;
-        SetCaption(_windowSummary, crossesMidnight ? $"{range} · ends next day" : $"{range} · local time");
-        ApplyScheduleAppearance();
 
         if (days.Count == 0)
         {
@@ -215,8 +216,9 @@ public partial class Form1 : Form
         }
         else if (state.NextTransition is { } next)
         {
-            SetPreviewTransition(state.IsAllowed ? "Next lock" : "Next unlock",
-                $"{next:ddd, d MMM} at {FormatInputTime(TimeOnly.FromDateTime(next))}");
+            var time = FormatInputTime(TimeOnly.FromDateTime(next));
+            var detail = next.Date == DateTime.Today ? time : $"{next:ddd, d MMM} at {time}";
+            SetPreviewTransition(state.IsAllowed ? "Next lock:" : "Next unlock:", detail);
         }
         else
         {
@@ -227,7 +229,11 @@ public partial class Form1 : Form
     private void ApplyScheduleAppearance()
     {
         _configState.ForeColor = _dirty && _canEdit ? Theme.Warn : Theme.Muted;
-        _windowState.ForeColor = _windowState.Text == "PLAY OPEN" ? Theme.Success : Theme.Muted;
+        var timed = _transitionTitle.Text is "Next lock:" or "Next unlock:";
+        var badge = timed && !Theme.IsDark && !Theme.HighContrast && _transition.Text.Length <= 8;
+        _transition.ForeColor = timed && Theme.IsDark ? Theme.Yellow : Theme.Text;
+        _transition.BackColor = badge ? Theme.Yellow : Color.Transparent;
+        _transition.Padding = badge ? new Padding(4, 0, 4, 1) : Padding.Empty;
     }
 
     private void SetPreviewTransition(string title, string detail)
@@ -237,6 +243,8 @@ public partial class Form1 : Form
 
         SetCaption(_transitionTitle, title);
         SetCaption(_transition, detail);
+        _transition.Font = detail.Length > 20 ? WorkspaceTheme.Link : WorkspaceTheme.Transition;
+        ApplyScheduleAppearance();
         _toolTip.SetToolTip(_transition, detail);
     }
 
@@ -253,6 +261,8 @@ public partial class Form1 : Form
             day.Enabled = enabled;
 
         _startInput.ReadOnly = !enabled;
+        _startEarlier.Enabled = enabled;
+        _startLater.Enabled = enabled;
         _durationInput.ReadOnly = !enabled;
         var validDuration = TryReadDuration(out var hours);
         _shorter.Enabled = enabled && (!validDuration || hours > 1);
@@ -329,7 +339,6 @@ public partial class Form1 : Form
     private void UpdateFolderCount()
     {
         var count = _folderList.Items.Count;
-        _folderCount.Text = count == 1 ? "1 folder" : $"{count} folders";
         _folderList.Visible = count > 0;
         _folderEmpty.Visible = count == 0;
     }
@@ -349,35 +358,30 @@ public partial class Form1 : Form
     private void RefreshVault()
     {
         var folder = _folderList.SelectedItem as string;
-        _vaultFolder.Text = folder is null ? "No folder selected" : FolderName(folder);
-        _toolTip.SetToolTip(_vaultFolder, folder);
+        _toolTip.SetToolTip(_extensions, folder);
         _toolTip.SetToolTip(_vaultEmptyBody, null);
         _scan.Text = "Scan file types";
         _extensions.Rows.Clear();
         if (!_vault.Checked)
         {
-            ShowVaultState("Folder permissions only", "Vault encryption is off",
-                "Enable encryption to choose file types for the vault.");
+            ShowVaultState("Vault encryption is off", "Open Vault options to enable encryption.");
         }
         else if (folder is null)
         {
-            ShowVaultState("Per-folder settings", "Choose a game folder", "Select a folder from the list to get started.");
+            ShowVaultState("Choose a game folder", "Select a folder from the list to get started.");
         }
         else if (_activeScans.ContainsKey(folder))
         {
             _scan.Text = "Scanning…";
-            ShowVaultState("Scanning this folder", "Looking for file types", "You can continue editing while the scan runs.");
+            ShowVaultState("Looking for file types", "You can continue editing while the scan runs.");
         }
         else if (!_scanResults.TryGetValue(folder, out var result))
         {
-            var details = _folderSettings.TryGetValue(folder, out var settings)
-                ? settings.UseCustomSelection ? CountSelected(settings.SelectedExtensions.Count) : "Saved preset"
-                : "Ready to scan";
-            ShowVaultState(details, "Scan this folder", "Review eligible file types before selecting them.");
+            ShowVaultState("Scan this folder", "Open Vault options to find eligible file types.");
         }
         else if (result.ErrorMessage is { Length: > 0 } error)
         {
-            ShowVaultState("Scan failed", "Could not scan this folder", error, StatusTone.Warning);
+            ShowVaultState("Could not scan this folder", error, StatusTone.Warning);
             _toolTip.SetToolTip(_vaultEmptyBody, error);
         }
         else
@@ -387,9 +391,8 @@ public partial class Form1 : Form
         UpdateEditControls();
     }
 
-    private void ShowVaultState(string details, string title, string body, StatusTone tone = StatusTone.Normal)
+    private void ShowVaultState(string title, string body, StatusTone tone = StatusTone.Normal)
     {
-        _vaultDetails.Text = details;
         _vaultEmptyTitle.Text = title;
         _vaultStateTone = tone;
         ApplyVaultStateAppearance();
@@ -438,8 +441,7 @@ public partial class Form1 : Form
             .ToList();
         if (eligible.Count == 0)
         {
-            ShowVaultState("0 eligible file types", "No eligible file types",
-                "Install and vault files are excluded.");
+            ShowVaultState("No eligible file types", "Install and vault files are excluded.");
             return;
         }
 
@@ -451,12 +453,17 @@ public partial class Form1 : Form
             foreach (var extension in eligible)
             {
                 var selected = settings?.ShouldEncryptFile("file" + extension.Extension) == true;
-                var risk = extension.RiskLevel == RiskLevel.Safe ? "Save file" : extension.RiskLevel.ToString();
-                var index = _extensions.Rows.Add(selected, extension.Extension, extension.FileCount, extension.FormattedSize, risk);
+                var category = extension.Category switch
+                {
+                    "Configuration" => "Configuration files",
+                    "Save Files" => "Save files",
+                    _ => extension.Category,
+                };
+                var index = _extensions.Rows.Add(selected, extension.Extension, $"{category} (*{extension.Extension})");
                 var row = _extensions.Rows[index];
                 row.Tag = extension;
-                row.Cells[1].ToolTipText = extension.Extension;
-                ApplyRiskAppearance(row);
+                row.Cells[1].ToolTipText = $"{extension.Description} · {extension.RiskLevel} risk";
+                row.Cells[2].ToolTipText = row.Cells[1].ToolTipText;
             }
             _extensions.ClearSelection();
         }
@@ -473,23 +480,11 @@ public partial class Form1 : Form
     private void ApplyVaultStateAppearance() =>
         _vaultEmptyTitle.ForeColor = _vaultStateTone == StatusTone.Warning ? Theme.Warn : Theme.Text;
 
-    private void ApplyRiskAppearance(DataGridViewRow row)
-    {
-        var extension = (ExtensionInfo)row.Tag!;
-        row.Cells["Risk"].Style.ForeColor = extension.RiskLevel switch
-        {
-            RiskLevel.Safe => Theme.Success,
-            RiskLevel.High or RiskLevel.Dangerous => Theme.Warn,
-            _ => Theme.Muted,
-        };
-    }
-
-    private static string CountSelected(int count) => count == 1 ? "1 type selected" : $"{count} types selected";
-
     private void UpdateVaultCount()
     {
-        var rows = _extensions.Rows.Cast<DataGridViewRow>();
-        _vaultDetails.Text = $"{CountSelected(rows.Count(row => row.Cells[0].Value is true))}  /  {_extensions.Rows.Count} eligible";
+        var selected = _extensions.Rows.Cast<DataGridViewRow>().Count(row => row.Cells[0].Value is true);
+        _extensions.AccessibleDescription = $"{selected} of {_extensions.Rows.Count} file types selected.";
+        _extensions.Invalidate();
     }
 
     private FolderEncryptionSettings GetDraftFolderSettings(string folder)

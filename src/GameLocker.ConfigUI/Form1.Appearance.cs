@@ -33,8 +33,6 @@ public partial class Form1
             bind();
 
         ApplyGridAppearance(_extensions);
-        foreach (DataGridViewRow row in _extensions.Rows)
-            ApplyRiskAppearance(row);
         ApplyStatusAppearance();
         ApplyVaultStateAppearance();
         ApplyScheduleAppearance();
@@ -71,6 +69,9 @@ public partial class Form1
 
     protected override void WndProc(ref Message message)
     {
+        if (HandleChrome(ref message))
+            return;
+
         base.WndProc(ref message);
         if (_status is not null && WorkspaceTheme.IsAppearanceMessage(message.Msg))
             RefreshAppearance();

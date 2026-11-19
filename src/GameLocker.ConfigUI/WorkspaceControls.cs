@@ -1,8 +1,8 @@
-﻿using System.Drawing.Drawing2D;
+using System.Drawing.Drawing2D;
 
 namespace GameLocker.ConfigUI;
 
-internal enum WorkspaceGlyph { Locker, Folder, Files }
+internal enum WorkspaceGlyph { Locker, Folder, Files, Link, Minimize, Maximize, Restore, Close }
 
 internal static class WorkspacePaint
 {
@@ -37,6 +37,32 @@ internal static class WorkspacePaint
                 graphics.DrawLine(pen, 8, 13, 16, 13);
                 graphics.DrawLine(pen, 8, 16, 14, 16);
                 break;
+            case WorkspaceGlyph.Link:
+                graphics.TranslateTransform(12, 12);
+                graphics.RotateTransform(-45);
+                graphics.DrawArc(pen, -11, -4, 8, 8, 90, 180);
+                graphics.DrawArc(pen, 3, -4, 8, 8, 270, 180);
+                graphics.DrawLine(pen, -7, -4, -2, -4);
+                graphics.DrawLine(pen, -7, 4, -2, 4);
+                graphics.DrawLine(pen, 2, -4, 7, -4);
+                graphics.DrawLine(pen, 2, 4, 7, 4);
+                graphics.DrawLine(pen, -4, 0, 4, 0);
+                break;
+            case WorkspaceGlyph.Minimize:
+                graphics.DrawLine(pen, 3, 12, 21, 12);
+                break;
+            case WorkspaceGlyph.Maximize:
+                graphics.DrawRectangle(pen, 3, 3, 18, 18);
+                break;
+            case WorkspaceGlyph.Restore:
+                graphics.DrawRectangle(pen, 3, 7, 14, 14);
+                Point[] restore = [new(7, 7), new(7, 3), new(21, 3), new(21, 17), new(17, 17)];
+                graphics.DrawLines(pen, restore);
+                break;
+            case WorkspaceGlyph.Close:
+                graphics.DrawLine(pen, 4, 4, 20, 20);
+                graphics.DrawLine(pen, 20, 4, 4, 20);
+                break;
         }
 
         graphics.Restore(state);
@@ -66,8 +92,18 @@ internal static class WorkspacePaint
         graphics.SmoothingMode = previous;
     }
 
-    public static void Focus(Graphics graphics, Rectangle bounds, Color fill, Color ink) =>
-        ControlPaint.DrawFocusRectangle(graphics, Rectangle.Inflate(bounds, -4, -4), ink, fill);
+    public static void FocusMark(Graphics graphics, Control control, Rectangle bounds, Color ink)
+    {
+        var thickness = control.LogicalToDeviceUnits(2);
+        var offset = control.LogicalToDeviceUnits(3);
+        var width = Math.Min(bounds.Width, control.LogicalToDeviceUnits(16));
+        if (width <= 0 || bounds.Height < offset + thickness)
+            return;
+
+        using var brush = new SolidBrush(ink);
+        graphics.FillRectangle(brush, bounds.Left + (bounds.Width - width) / 2,
+            bounds.Bottom - offset - thickness, width, thickness);
+    }
 }
 
 internal sealed class WorkspaceIcon(WorkspaceGlyph glyph, bool accent = false) : Control
@@ -85,6 +121,8 @@ internal sealed class WorkspaceIcon(WorkspaceGlyph glyph, bool accent = false) :
 
 internal sealed class WorkspaceSurface : Panel
 {
+    public int CornerRadius { get; init; }
+
     public WorkspaceSurface()
     {
         DoubleBuffered = true;
@@ -94,7 +132,15 @@ internal sealed class WorkspaceSurface : Panel
     protected override void OnPaint(PaintEventArgs e)
     {
         base.OnPaint(e);
-        using var pen = new Pen(WorkspaceTheme.For(this).Line);
+        var theme = WorkspaceTheme.For(this);
+        if (CornerRadius > 0)
+        {
+            e.Graphics.Clear(Parent?.BackColor ?? theme.Canvas);
+            WorkspacePaint.ButtonFace(e.Graphics, ClientRectangle, LogicalToDeviceUnits(CornerRadius), BackColor, theme.Line);
+            return;
+        }
+
+        using var pen = new Pen(theme.Line);
         e.Graphics.DrawRectangle(pen, 0, 0, Width - 1, Height - 1);
     }
 }
@@ -103,14 +149,18 @@ internal sealed class WorkspaceButton : Button
 {
     private readonly bool _primary;
     private readonly bool _danger;
+    private readonly bool _bare;
     private bool _hovered;
 
-    public WorkspaceButton(string text, bool primary = false, bool danger = false)
+    public WorkspaceGlyph? Symbol { get; set; }
+
+    public WorkspaceButton(string text, bool primary = false, bool danger = false, bool bare = false)
     {
         Text = text;
         Font = WorkspaceTheme.Strong;
         _primary = primary;
         _danger = danger;
+        _bare = bare;
         FlatStyle = FlatStyle.Flat;
         UseVisualStyleBackColor = false;
         Cursor = Cursors.Hand;
@@ -120,7 +170,8 @@ internal sealed class WorkspaceButton : Button
     protected override void OnPaint(PaintEventArgs e)
     {
         var theme = WorkspaceTheme.For(this);
-        var background = _primary && Enabled ? theme.Yellow : _hovered && Enabled ? theme.Hover : theme.Raised;
+        var background = _primary && Enabled ? theme.Yellow : _hovered && Enabled ? theme.Hover
+            : _bare ? BackColor : theme.Raised;
         var foreground = !Enabled ? theme.Disabled
             : _primary ? theme.OnYellow : _danger ? theme.Error : theme.Text;
         var border = !Enabled ? theme.Line : _hovered ? theme.Pink : _primary ? theme.OnYellow : theme.ControlLine;
@@ -128,24 +179,49 @@ internal sealed class WorkspaceButton : Button
             foreground = _hovered ? SystemColors.WindowText : SystemColors.ControlText;
 
         e.Graphics.Clear(BackColor);
-        WorkspacePaint.ButtonFace(e.Graphics, ClientRectangle, LogicalToDeviceUnits(4), background, border);
+        if (_bare)
+            e.Graphics.Clear(background);
+        else
+            WorkspacePaint.ButtonFace(e.Graphics, ClientRectangle, LogicalToDeviceUnits(6), background, border);
+
+        var textBounds = ClientRectangle;
+        var hasSymbol = Image is not null || Symbol is not null;
+        if (hasSymbol && Text.Length > 0)
+        {
+            var indent = LogicalToDeviceUnits(42);
+            textBounds = Rectangle.FromLTRB(indent, 0, Width, Height);
+        }
+        var center = hasSymbol && Text.Length > 0 ? LogicalToDeviceUnits(18) : Width / 2;
         if (Image is { } logo)
         {
-            var scale = (float)LogicalToDeviceUnits(22) / Math.Max(logo.Width, logo.Height);
+            var scale = (float)LogicalToDeviceUnits(27) / Math.Max(logo.Width, logo.Height);
             var width = (int)Math.Round(logo.Width * scale);
             var height = (int)Math.Round(logo.Height * scale);
-            var bounds = new Rectangle((Width - width) / 2, (Height - height) / 2, width, height);
+            var bounds = new Rectangle(center - width / 2, (Height - height) / 2, width, height);
             e.Graphics.InterpolationMode = InterpolationMode.HighQualityBicubic;
             e.Graphics.DrawImage(logo, bounds);
         }
-        else
+        else if (Symbol is { } symbol)
         {
-            TextRenderer.DrawText(e.Graphics, Text, Font, ClientRectangle, foreground,
-                TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter |
+            var size = LogicalToDeviceUnits(symbol switch
+            {
+                WorkspaceGlyph.Locker => 45,
+                WorkspaceGlyph.Link => 29,
+                _ => 18,
+            });
+            var color = symbol == WorkspaceGlyph.Locker && !theme.HighContrast ? theme.Pink : foreground;
+            WorkspacePaint.Glyph(e.Graphics, symbol, new Rectangle(center - size / 2, (Height - size) / 2, size, size),
+                color, background);
+        }
+        if (Text.Length > 0)
+        {
+            TextRenderer.DrawText(e.Graphics, Text, Font, textBounds, foreground,
+                (hasSymbol || TextAlign == ContentAlignment.MiddleLeft ? TextFormatFlags.Left : TextFormatFlags.HorizontalCenter) |
+                TextFormatFlags.VerticalCenter |
                 TextFormatFlags.SingleLine | (ShowKeyboardCues ? TextFormatFlags.Default : TextFormatFlags.HidePrefix));
         }
         if (Focused)
-            WorkspacePaint.Focus(e.Graphics, ClientRectangle, background, foreground);
+            WorkspacePaint.FocusMark(e.Graphics, this, ClientRectangle, foreground);
     }
 
     protected override void OnMouseEnter(EventArgs e)
@@ -172,7 +248,7 @@ internal sealed class WorkspaceThemeOption : RadioButton
         UseVisualStyleBackColor = false;
         Text = mode.ToString();
         AccessibleName = $"{mode} theme";
-        Font = WorkspaceTheme.Strong;
+        Font = WorkspaceTheme.Link;
         Cursor = Cursors.Hand;
         Dock = DockStyle.Fill;
     }
@@ -189,7 +265,7 @@ internal sealed class WorkspaceThemeOption : RadioButton
         TextRenderer.DrawText(e.Graphics, Text, Font, ClientRectangle, ink,
             TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine);
         if (Focused)
-            WorkspacePaint.Focus(e.Graphics, ClientRectangle, fill, ink);
+            WorkspacePaint.FocusMark(e.Graphics, this, ClientRectangle, ink);
     }
 
     protected override void OnCheckedChanged(EventArgs e)
@@ -211,54 +287,21 @@ internal sealed class WorkspaceThemeOption : RadioButton
     }
 }
 
-internal sealed class WorkspaceCheckBox(bool day = false) : CheckBox
+internal sealed class WorkspaceDayOption : CheckBox
 {
     protected override void OnPaint(PaintEventArgs e)
     {
         var theme = WorkspaceTheme.For(this);
-        var selected = Enabled && Checked;
-        var foreground = day && Checked ? Enabled ? theme.OnPink : theme.OnSelected
-            : Enabled ? theme.Text : theme.Disabled;
-        var background = day ? Checked ? Enabled ? theme.Pink : theme.Selected : theme.Inset : BackColor;
+        var ink = Enabled ? Checked ? theme.OnPink : theme.Text : Checked ? theme.OnSelected : theme.Disabled;
+        var fill = Checked ? Enabled ? theme.Pink : theme.Selected : theme.Inset;
+        var border = Enabled ? Checked ? theme.Pink : theme.ControlLine : theme.Line;
         e.Graphics.Clear(BackColor);
-        var flags = TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine |
-            (ShowKeyboardCues ? TextFormatFlags.Default : TextFormatFlags.HidePrefix);
-        if (day)
-        {
-            var border = selected ? theme.Pink : Enabled ? theme.ControlLine : theme.Line;
-            WorkspacePaint.ButtonFace(e.Graphics, ClientRectangle, LogicalToDeviceUnits(4), background, border);
-            TextRenderer.DrawText(e.Graphics, Text, Font, ClientRectangle, foreground, flags | TextFormatFlags.HorizontalCenter);
-        }
-        else
-        {
-            var side = LogicalToDeviceUnits(15);
-            var top = (Height - side) / 2;
-            var check = new Rectangle(1, top, side, side);
-            if (Checked)
-            {
-                using var brush = new SolidBrush(selected ? theme.Pink : theme.Inset);
-                using var border = new Pen(selected ? theme.Pink : theme.Disabled);
-                using var tick = new Pen(selected ? theme.OnPink : theme.Disabled, Math.Max(1, LogicalToDeviceUnits(2)));
-                e.Graphics.FillRectangle(brush, check);
-                e.Graphics.DrawRectangle(border, check);
-                Point[] mark = [new(check.Left + side / 4, top + side / 2),
-                    new(check.Left + side / 2 - 1, top + side * 3 / 4),
-                    new(check.Left + side * 3 / 4 + 1, top + side / 4)];
-                e.Graphics.DrawLines(tick, mark);
-            }
-            else
-            {
-                using var pen = new Pen(Enabled ? theme.ControlLine : theme.Disabled);
-                e.Graphics.DrawRectangle(pen, check);
-            }
-
-            var textLeft = LogicalToDeviceUnits(25);
-            TextRenderer.DrawText(e.Graphics, Text, Font, Rectangle.FromLTRB(textLeft, 0, Width, Height),
-                foreground, flags | TextFormatFlags.EndEllipsis);
-        }
-
+        WorkspacePaint.ButtonFace(e.Graphics, ClientRectangle, LogicalToDeviceUnits(6), fill, border);
+        TextRenderer.DrawText(e.Graphics, Text, Font, ClientRectangle, ink,
+            TextFormatFlags.VerticalCenter | TextFormatFlags.HorizontalCenter | TextFormatFlags.SingleLine |
+            TextFormatFlags.NoPrefix);
         if (Focused)
-            WorkspacePaint.Focus(e.Graphics, ClientRectangle, background, foreground);
+            WorkspacePaint.FocusMark(e.Graphics, this, ClientRectangle, ink);
     }
 
     protected override void OnCheckedChanged(EventArgs e)

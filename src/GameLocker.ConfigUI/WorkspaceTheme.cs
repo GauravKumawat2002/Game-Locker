@@ -15,32 +15,36 @@ internal sealed record WorkspaceTheme(
     private static Color Rgb(int value) => Color.FromArgb(unchecked((int)0xFF000000) | value);
 
     private static readonly WorkspaceTheme Dark = new(
-        Canvas: Rgb(0x090E1E), Surface: Rgb(0x11182C), Inset: Rgb(0x0C1224), Raised: Rgb(0x1A2238),
-        Hover: Rgb(0x2B3551), Line: Rgb(0x343F5F), ControlLine: Rgb(0x7784A4),
-        Text: Rgb(0xF6F7FF), Muted: Rgb(0xBEC7E2), Disabled: Rgb(0x919CB9),
-        Pink: Rgb(0xFF3B96), OnPink: Rgb(0x24091A), Yellow: Rgb(0xEDFA3F), OnYellow: Rgb(0x171B25),
-        Selected: Rgb(0x512242), OnSelected: Rgb(0xFFE3F1), Success: Rgb(0xEDFA78),
+        Canvas: Rgb(0x090F22), Surface: Rgb(0x0E172B), Inset: Rgb(0x10182D), Raised: Rgb(0x222C43),
+        Hover: Rgb(0x28334A), Line: Rgb(0x3A4A66), ControlLine: Rgb(0xCFD5E3),
+        Text: Rgb(0xFAF9FC), Muted: Rgb(0xE2E5EE), Disabled: Rgb(0xA1ABC2),
+        Pink: Rgb(0xEB1969), OnPink: Color.White, Yellow: Rgb(0xEDFA39), OnYellow: Rgb(0x080F27),
+        Selected: Rgb(0x591539), OnSelected: Color.White, Success: Rgb(0xEDFA39),
         Warn: Rgb(0xFFD394), Error: Rgb(0xFF99BD), IsDark: true);
 
     private static readonly WorkspaceTheme Light = new(
-        Canvas: Rgb(0xF7F7FB), Surface: Rgb(0xEEF1F8), Inset: Rgb(0xFCFCFF), Raised: Rgb(0xE2E7F4),
-        Hover: Rgb(0xD7DEF0), Line: Rgb(0xBAC5DB), ControlLine: Rgb(0x68748E),
-        Text: Rgb(0x121B38), Muted: Rgb(0x485672), Disabled: Rgb(0x596581),
-        Pink: Rgb(0xA60C55), OnPink: Color.White, Yellow: Rgb(0xEDFA3F), OnYellow: Rgb(0x171B25),
-        Selected: Rgb(0xF2CCE0), OnSelected: Rgb(0x671336), Success: Rgb(0x3B5307),
+        Canvas: Rgb(0xF6F5F3), Surface: Rgb(0xF0F2F7), Inset: Rgb(0xF5F5F7), Raised: Rgb(0xD9DFEF),
+        Hover: Rgb(0xE1E5F0), Line: Rgb(0xCBD4E4), ControlLine: Rgb(0x152249),
+        Text: Rgb(0x081337), Muted: Rgb(0x253352), Disabled: Rgb(0x586784),
+        Pink: Rgb(0xA81154), OnPink: Color.White, Yellow: Rgb(0xECFA39), OnYellow: Rgb(0x081337),
+        Selected: Rgb(0xE5AACB), OnSelected: Rgb(0x101432), Success: Rgb(0x3B5307),
         Warn: Rgb(0x72440A), Error: Rgb(0x9D1640));
 
     public static readonly Font Body = new("Segoe UI", 9.75F);
     public static readonly Font Small = new("Segoe UI", 9F);
     public static readonly Font Strong = new("Segoe UI", 9.75F, FontStyle.Bold);
-    public static readonly Font Transition = new("Segoe UI", 11F, FontStyle.Bold);
-    public static readonly Font Section = new("Segoe UI", 16F, FontStyle.Bold);
-    public static readonly Font Schedule = new("Segoe UI", 22F, FontStyle.Bold);
-    public static readonly Font Brand = new("Segoe UI", 24F, FontStyle.Bold);
-    public static readonly Font Clock = new("Consolas", 23F, FontStyle.Bold);
-    public static readonly Font PreciseClock = new("Consolas", 16F, FontStyle.Bold);
+    public static readonly Font Transition = new("Segoe UI", 15F, FontStyle.Bold);
+    public static readonly Font Section = new("Segoe UI Black", 19F, FontStyle.Bold);
+    public static readonly Font Schedule = new("Segoe UI Black", 24F, FontStyle.Bold);
+    public static readonly Font Brand = new("Segoe UI Black", 25F, FontStyle.Bold);
+    public static readonly Font Subtitle = new("Segoe UI", 17F, FontStyle.Regular);
+    public static readonly Font Day = new("Segoe UI", 14F, FontStyle.Bold);
+    public static readonly Font Link = new("Segoe UI", 12F, FontStyle.Bold);
+    public static readonly Font Clock = new("Consolas", 31F, FontStyle.Bold);
+    public static readonly Font PreciseClock = new("Consolas", 12F, FontStyle.Bold);
     public static readonly Font Data = new("Consolas", 10F, FontStyle.Bold);
     public static readonly Font Metadata = new("Consolas", 9F);
+    public static readonly Font Ruler = new("Consolas", 11F, FontStyle.Bold);
 
     public bool UseLightLogos => Raised.GetBrightness() < 0.5F;
 
@@ -106,6 +110,11 @@ internal sealed record WorkspaceTheme(
         var text = HighContrast ? -1 : ColorTranslator.ToWin32(Text);
         _ = DwmSetWindowAttribute(handle, 35, ref caption, sizeof(int));
         _ = DwmSetWindowAttribute(handle, 36, ref text, sizeof(int));
+        if (form is Form1)
+        {
+            var round = 2;
+            _ = DwmSetWindowAttribute(handle, 33, ref round, sizeof(int));
+        }
     }
 
     [DllImport("dwmapi.dll")]
