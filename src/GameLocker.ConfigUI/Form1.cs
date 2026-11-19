@@ -21,6 +21,16 @@ public partial class Form1 : Form
         InitializeComponent();
         UpdateEditControls();
         ResetExtensions();
+
+        foreach (var day in DayCheckboxes)
+            day.CheckedChanged += (_, _) => UpdateSchedulePreview();
+        dtpStartTime.ValueChanged += (_, _) => UpdateSchedulePreview();
+        nudDuration.ValueChanged += (_, _) => UpdateSchedulePreview();
+
+        var scheduleTimer = new System.Windows.Forms.Timer(components!) { Interval = 1000 };
+        scheduleTimer.Tick += (_, _) => UpdateSchedulePreview();
+        scheduleTimer.Start();
+        UpdateSchedulePreview();
     }
 
     private async void Form1_Load(object sender, EventArgs e)
@@ -75,10 +85,52 @@ public partial class Form1 : Form
             lstFolders.Items.Add(path);
 
         ResetExtensions();
+        UpdateSchedulePreview();
     }
 
     private CheckBox[] DayCheckboxes =>
         [chkSunday, chkMonday, chkTuesday, chkWednesday, chkThursday, chkFriday, chkSaturday];
+
+    private GameLockerConfig ReadSchedule()
+    {
+        return new GameLockerConfig
+        {
+            AllowedDays = DayCheckboxes.Select((checkbox, index) => (checkbox, index))
+                .Where(day => day.checkbox.Checked)
+                .Select(day => (DayOfWeek)day.index)
+                .ToList(),
+            StartTime = TimeOnly.FromDateTime(dtpStartTime.Value),
+            DurationHours = (int)nudDuration.Value,
+        };
+    }
+
+    private void UpdateSchedulePreview()
+    {
+        if (lstFolders.Items.Count == 0)
+        {
+            lblSchedulePreview.Text = "Add a folder and choose allowed days.";
+            return;
+        }
+
+        var schedule = ReadSchedule();
+        if (schedule.AllowedDays.Count == 0)
+        {
+            lblSchedulePreview.Text = "Choose at least one allowed day.";
+            return;
+        }
+
+        var saved = _config.StartTime == schedule.StartTime &&
+            _config.DurationHours == schedule.DurationHours &&
+            _config.AllowedDays.ToHashSet().SetEquals(schedule.AllowedDays) &&
+            _config.GameFolderPaths.ToHashSet(StringComparer.OrdinalIgnoreCase)
+                .SetEquals(lstFolders.Items.Cast<string>());
+        var state = schedule.GetScheduleState(DateTime.Now);
+        var prefix = saved ? "Next" : "After saving, next";
+        var action = state.IsAllowed ? "lock" : "unlock";
+        lblSchedulePreview.Text = state.NextTransition is { } next
+            ? $"{prefix} {action} {next:ddd, d MMM} at {next:T}"
+            : saved ? "Play allowed all week." : "After saving, play is allowed all week.";
+    }
 
     private void UpdateEditControls()
     {
@@ -119,6 +171,7 @@ public partial class Form1 : Form
 
         lstFolders.Items.Add(guard.Path);
         lstFolders.SelectedItem = guard.Path;
+        UpdateSchedulePreview();
         ShowStatus("Folder added. Save to apply your changes.");
     }
 
@@ -132,6 +185,7 @@ public partial class Form1 : Form
 
         _folderSettings.Remove(folder);
         lstFolders.Items.Remove(folder);
+        UpdateSchedulePreview();
         ShowStatus("Folder removed from the list. Save to restore its access.");
     }
 
@@ -281,13 +335,10 @@ public partial class Form1 : Form
 
     private async void btnSave_Click(object sender, EventArgs e)
     {
-        var days = DayCheckboxes.Select((checkbox, index) => (checkbox, index))
-            .Where(day => day.checkbox.Checked)
-            .Select(day => (DayOfWeek)day.index)
-            .ToList();
+        var config = ReadSchedule();
         var folders = lstFolders.Items.Cast<string>().ToList();
 
-        if (folders.Count > 0 && days.Count == 0)
+        if (folders.Count > 0 && config.AllowedDays.Count == 0)
         {
             ShowStatus("Choose at least one day for the gaming schedule.", true);
             return;
@@ -302,18 +353,12 @@ public partial class Form1 : Form
             }
         }
 
-        var config = new GameLockerConfig
-        {
-            AllowedDays = days,
-            GameFolderPaths = folders,
-            StartTime = TimeOnly.FromDateTime(dtpStartTime.Value),
-            DurationHours = (int)nudDuration.Value,
-            NotificationsEnabled = chkNotifications.Checked,
-            PollingIntervalMinutes = _config.PollingIntervalMinutes,
-            LockMode = chkVault.Checked ? LockMode.AclAndVault : LockMode.AclOnly,
-            EncryptionSettings = _config.EncryptionSettings,
-            FolderEncryptionSettings = _folderSettings.Values.ToList(),
-        };
+        config.GameFolderPaths = folders;
+        config.NotificationsEnabled = chkNotifications.Checked;
+        config.PollingIntervalMinutes = _config.PollingIntervalMinutes;
+        config.LockMode = chkVault.Checked ? LockMode.AclAndVault : LockMode.AclOnly;
+        config.EncryptionSettings = _config.EncryptionSettings;
+        config.FolderEncryptionSettings = _folderSettings.Values.ToList();
         await SaveAsync(config);
     }
 
@@ -345,6 +390,7 @@ public partial class Form1 : Form
 
             await _configManager.SaveConfigAsync(config);
             _config = config;
+            UpdateSchedulePreview();
 
             if (ServiceManager.IsServiceRunning())
             {

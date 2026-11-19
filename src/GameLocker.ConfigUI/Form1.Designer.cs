@@ -52,6 +52,7 @@ partial class Form1
         this.lblDuration = new System.Windows.Forms.Label();
         this.nudDuration = new System.Windows.Forms.NumericUpDown();
         this.lblDurationHours = new System.Windows.Forms.Label();
+        this.lblSchedulePreview = new System.Windows.Forms.Label();
         
         // Folder controls
         this.lstFolders = new System.Windows.Forms.ListBox();
@@ -161,9 +162,10 @@ partial class Form1
         this.grpTime.Controls.Add(this.lblDuration);
         this.grpTime.Controls.Add(this.nudDuration);
         this.grpTime.Controls.Add(this.lblDurationHours);
+        this.grpTime.Controls.Add(this.lblSchedulePreview);
         this.grpTime.Location = new System.Drawing.Point(12, 105);
         this.grpTime.Name = "grpTime";
-        this.grpTime.Size = new System.Drawing.Size(360, 55);
+        this.grpTime.Size = new System.Drawing.Size(360, 83);
         this.grpTime.TabIndex = 1;
         this.grpTime.TabStop = false;
         this.grpTime.Text = "Gaming Time Window";
@@ -201,6 +203,10 @@ partial class Form1
         this.lblDurationHours.Size = new System.Drawing.Size(36, 15);
         this.lblDurationHours.Text = "hours";
 
+        this.lblSchedulePreview.Location = new System.Drawing.Point(15, 50);
+        this.lblSchedulePreview.Name = "lblSchedulePreview";
+        this.lblSchedulePreview.Size = new System.Drawing.Size(332, 30);
+
         // 
         // grpFolders
         // 
@@ -208,7 +214,7 @@ partial class Form1
         this.grpFolders.Controls.Add(this.btnAddFolder);
         this.grpFolders.Controls.Add(this.btnRemoveFolder);
         this.grpFolders.Controls.Add(this.btnTestLock);
-        this.grpFolders.Location = new System.Drawing.Point(12, 168);
+        this.grpFolders.Location = new System.Drawing.Point(12, 196);
         this.grpFolders.Name = "grpFolders";
         this.grpFolders.Size = new System.Drawing.Size(360, 145);
         this.grpFolders.TabIndex = 2;
@@ -330,7 +336,7 @@ partial class Form1
         this.btnSave.FlatStyle = System.Windows.Forms.FlatStyle.Flat;
         this.btnSave.Font = new System.Drawing.Font("Segoe UI", 9F, System.Drawing.FontStyle.Bold);
         this.btnSave.ForeColor = System.Drawing.Color.White;
-        this.btnSave.Location = new System.Drawing.Point(12, 320);
+        this.btnSave.Location = new System.Drawing.Point(12, 348);
         this.btnSave.Name = "btnSave";
         this.btnSave.Size = new System.Drawing.Size(170, 35);
         this.btnSave.TabIndex = 5;
@@ -341,7 +347,7 @@ partial class Form1
         // 
         // btnClear
         // 
-        this.btnClear.Location = new System.Drawing.Point(195, 320);
+        this.btnClear.Location = new System.Drawing.Point(195, 348);
         this.btnClear.Name = "btnClear";
         this.btnClear.Size = new System.Drawing.Size(170, 35);
         this.btnClear.TabIndex = 6;
@@ -412,6 +418,7 @@ partial class Form1
     private System.Windows.Forms.Label lblDuration;
     private System.Windows.Forms.NumericUpDown nudDuration;
     private System.Windows.Forms.Label lblDurationHours;
+    private System.Windows.Forms.Label lblSchedulePreview;
     
     private System.Windows.Forms.ListBox lstFolders;
     private System.Windows.Forms.Button btnAddFolder;

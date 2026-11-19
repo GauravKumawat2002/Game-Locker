@@ -31,7 +31,7 @@ A Windows system service + configuration UI application that enforces a **game a
 
 1. Open `GameLocker-Installer-v1.1.0.exe` and approve the Windows administrator prompt.
 2. Finish setup and open **GameLocker Configuration**.
-3. Add a game folder, choose allowed days, a start time and a duration, then save.
+3. Add a game folder and choose allowed days, a start time, and a duration. Check the next lock or unlock in the preview, then save.
 4. To use vault encryption, enable it and choose the file extensions for that folder.
 
 At cutoff, GameLocker requests a normal close from running games in the configured folders and gives them up to ten seconds to save. Games that remain open after the request can continue running while folder access is restricted.
