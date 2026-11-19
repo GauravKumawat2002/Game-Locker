@@ -90,6 +90,15 @@ public class GameLockerConfig
     }
 
     /// <summary>
+    /// Gets the current schedule state and the next time that state will change.
+    /// </summary>
+    public ScheduleState GetScheduleState(DateTime currentTime)
+    {
+        var allowed = IsWithinAllowedTime(currentTime);
+        return new ScheduleState(allowed, allowed ? GetNextLockTime(currentTime) : GetNextUnlockTime(currentTime));
+    }
+
+    /// <summary>
     /// Produces the gaming windows as absolute date-time intervals, from one day before the given
     /// time to seven days after it.
     /// </summary>

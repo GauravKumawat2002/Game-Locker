@@ -13,6 +13,8 @@ namespace GameLocker.Tests;
 /// </remarks>
 public class ScheduleWindowTests
 {
+    private static readonly TimeSpan PollInterval = TimeSpan.FromSeconds(15);
+
     private static GameLockerConfig Config(TimeOnly start, int durationHours, params DayOfWeek[] days) =>
         new()
         {
@@ -84,6 +86,67 @@ public class ScheduleWindowTests
 
         Assert.Equal(Sat(18, 0), config.GetNextUnlockTime(Sat(9, 0)));
         Assert.Equal(Mon(18, 0), config.GetNextUnlockTime(Sat(20, 30)));
+    }
+
+    [Theory]
+    [InlineData(18, false)]
+    [InlineData(20, true)]
+    [Trait("Category", "Basic")]
+    public void RecheckDelay_WakesAtTheUpcomingTransition(int hour, bool allowedBeforeTransition)
+    {
+        var config = Config(new TimeOnly(18, 0), 2, DayOfWeek.Saturday);
+        var transition = Sat(hour);
+        var observedAt = transition.AddSeconds(-4);
+        var schedule = config.GetScheduleState(observedAt);
+
+        Assert.Equal(allowedBeforeTransition, schedule.IsAllowed);
+        Assert.Equal(transition, schedule.NextTransition);
+        Assert.Equal(TimeSpan.FromSeconds(4), schedule.GetRecheckDelay(observedAt, PollInterval));
+        Assert.NotEqual(allowedBeforeTransition, config.GetScheduleState(transition).IsAllowed);
+    }
+
+    [Fact]
+    [Trait("Category", "Basic")]
+    public void RecheckDelay_IsImmediateWhenFolderWorkPassesTheObservedTransition()
+    {
+        var config = Config(new TimeOnly(22, 0), 4, DayOfWeek.Saturday);
+        var observed = config.GetScheduleState(Sun(1, 59));
+        var afterFolderWork = Sun(2, 0).AddSeconds(1);
+
+        Assert.True(observed.IsAllowed);
+        Assert.NotEqual(observed, config.GetScheduleState(afterFolderWork));
+        Assert.Equal(TimeSpan.Zero, observed.GetRecheckDelay(afterFolderWork, PollInterval));
+    }
+
+    [Fact]
+    [Trait("Category", "Basic")]
+    public void RecheckDelay_KeepsPollingWhenTheTransitionIsDistantOrAbsent()
+    {
+        var now = Sat(12);
+        var scheduled = Config(new TimeOnly(18, 0), 2, DayOfWeek.Saturday).GetScheduleState(now);
+        var alwaysAllowed = Config(new TimeOnly(18, 0), 24, Enum.GetValues<DayOfWeek>()).GetScheduleState(now);
+        var neverAllowed = Config(new TimeOnly(18, 0), 2).GetScheduleState(now);
+
+        Assert.Equal(PollInterval, scheduled.GetRecheckDelay(now, PollInterval));
+        Assert.Equal(Sat(18), scheduled.NextTransition);
+        Assert.Equal(PollInterval, alwaysAllowed.GetRecheckDelay(now, PollInterval));
+        Assert.Null(alwaysAllowed.NextTransition);
+        Assert.Equal(PollInterval, neverAllowed.GetRecheckDelay(now, PollInterval));
+        Assert.Null(neverAllowed.NextTransition);
+    }
+
+    [Fact]
+    [Trait("Category", "Basic")]
+    public void ScheduleState_DoesNotChangeAtTheJoinBetweenConsecutiveFullDayWindows()
+    {
+        var config = Config(new TimeOnly(18, 0), 24, DayOfWeek.Saturday, DayOfWeek.Sunday);
+        var join = Sun(18);
+        var beforeJoin = config.GetScheduleState(join.AddSeconds(-1));
+
+        Assert.True(beforeJoin.IsAllowed);
+        Assert.Equal(Mon(18), beforeJoin.NextTransition);
+        Assert.Equal(beforeJoin, config.GetScheduleState(join));
+        Assert.Equal(PollInterval, beforeJoin.GetRecheckDelay(join.AddSeconds(-1), PollInterval));
     }
 
     [Fact]

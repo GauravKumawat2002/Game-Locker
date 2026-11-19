@@ -3,6 +3,12 @@ using GameLocker.Service.Logging;
 using Microsoft.Extensions.Logging.Configuration;
 using Microsoft.Extensions.Logging.EventLog;
 
+if (args.Length > 0 && args[0] == InteractiveGameCloser.Command)
+{
+    Environment.ExitCode = await InteractiveGameCloser.RunHelperAsync(args);
+    return;
+}
+
 var builder = Host.CreateApplicationBuilder(args);
 
 // Configure as Windows Service

@@ -40,9 +40,11 @@ public sealed class GameLockerService : BackgroundService
     private readonly LockWarningTracker _warnings = new(15, 5);
     private readonly ClockDriftDetector _clockDrift = new(ClockJumpThreshold);
     private readonly Stopwatch _monotonic = Stopwatch.StartNew();
+    private readonly HashSet<string> _gameCloseRequested = new(StringComparer.OrdinalIgnoreCase);
 
     private GameLockerConfig? _config;
     private bool? _lastAnnouncedAllowed;
+    private DateTime? _nextUnlockAfterCloseRequest;
     private DateTime _lastProblemLogUtc = DateTime.MinValue;
 
     public GameLockerService(ILogger<GameLockerService> logger)
@@ -56,7 +58,7 @@ public sealed class GameLockerService : BackgroundService
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         _logger.LogInformation(
-            "GameLocker Service starting. Reconciling every {Seconds} seconds.",
+            "GameLocker Service starting. Reconciling at schedule transitions and polling every {Seconds} seconds.",
             TickInterval.TotalSeconds);
 
         // Restrict the state store on every start, not only at install time.
@@ -65,9 +67,10 @@ public sealed class GameLockerService : BackgroundService
 
         while (!stoppingToken.IsCancellationRequested)
         {
+            var delay = TickInterval;
             try
             {
-                await ReconcileAsync(stoppingToken);
+                delay = await ReconcileAsync(stoppingToken);
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
             {
@@ -82,7 +85,7 @@ public sealed class GameLockerService : BackgroundService
 
             try
             {
-                await Task.Delay(TickInterval, stoppingToken);
+                await Task.Delay(delay, stoppingToken);
             }
             catch (OperationCanceledException)
             {
@@ -108,7 +111,8 @@ public sealed class GameLockerService : BackgroundService
     /// Runs one reconciliation cycle.
     /// </summary>
     /// <param name="cancellationToken">Cancels the cycle when the service is stopping.</param>
-    private async Task ReconcileAsync(CancellationToken cancellationToken)
+    /// <returns>How long to wait before reconciling again.</returns>
+    private async Task<TimeSpan> ReconcileAsync(CancellationToken cancellationToken)
     {
         DetectClockJump();
 
@@ -122,12 +126,13 @@ public sealed class GameLockerService : BackgroundService
         await RestoreRemovedFoldersAsync(config, cancellationToken);
 
         if (config is null || config.GameFolderPaths.Count == 0)
-            return;
+            return TickInterval;
 
-        var now = DateTime.Now;
-        var utcNow = DateTime.UtcNow;
-        var allowed = config.IsWithinAllowedTime(now);
-        var desired = allowed ? FolderState.Unlocked : FolderState.Locked;
+        var schedule = config.GetScheduleState(DateTime.Now);
+        var desired = schedule.IsAllowed ? FolderState.Unlocked : FolderState.Locked;
+        await RequestGameClosuresAsync(config, schedule, cancellationToken);
+        if (config.GetScheduleState(DateTime.Now) != schedule)
+            return TimeSpan.Zero;
 
         var total = config.GameFolderPaths.Count;
         var correct = 0;
@@ -142,6 +147,11 @@ public sealed class GameLockerService : BackgroundService
 
             var observed = _folderLocker.GetFolderState(folderPath);
 
+            // Restart from the first folder when the schedule changes so work completed
+            // earlier in the cycle is rechecked too.
+            if (config.GetScheduleState(DateTime.Now) != schedule)
+                return TimeSpan.Zero;
+
             if (observed == desired)
             {
                 _retryPolicy.RecordSuccess(retryKey);
@@ -149,7 +159,7 @@ public sealed class GameLockerService : BackgroundService
                 continue;
             }
 
-            if (!_retryPolicy.ShouldAttempt(retryKey, utcNow))
+            if (!_retryPolicy.ShouldAttempt(retryKey, DateTime.UtcNow))
             {
                 deferred++;
                 continue;
@@ -162,6 +172,9 @@ public sealed class GameLockerService : BackgroundService
             var error = desired == FolderState.Locked
                 ? await TryLockAsync(folderPath)
                 : await TryUnlockAsync(folderPath);
+
+            if (config.GetScheduleState(DateTime.Now) != schedule)
+                return TimeSpan.Zero;
 
             // Re-observe. The return value of the operation is not evidence: the whole class of
             // "reported success while the folder was untouched" bugs came from believing it.
@@ -177,7 +190,7 @@ public sealed class GameLockerService : BackgroundService
             else
             {
                 failed++;
-                var delay = _retryPolicy.RecordFailure(retryKey, utcNow);
+                var delay = _retryPolicy.RecordFailure(retryKey, DateTime.UtcNow);
 
                 _logger.LogError(
                     "{Folder} is still {Observed} after attempting to make it {Desired} " +
@@ -194,8 +207,36 @@ public sealed class GameLockerService : BackgroundService
                 correct, total, changed, failed, deferred);
         }
 
-        AnnounceTransition(allowed, correct, total, now);
-        ShowWarningIfDue(allowed, now);
+        var now = DateTime.Now;
+        if (config.GetScheduleState(now) != schedule)
+            return TimeSpan.Zero;
+
+        AnnounceTransition(schedule.IsAllowed, correct, total, now);
+        ShowWarningIfDue(schedule.IsAllowed, now);
+        return schedule.GetRecheckDelay(DateTime.Now, TickInterval);
+    }
+
+    private async Task RequestGameClosuresAsync(GameLockerConfig config, ScheduleState schedule, CancellationToken cancellationToken)
+    {
+        if (schedule.IsAllowed || (_nextUnlockAfterCloseRequest is { } nextUnlock && DateTime.Now >= nextUnlock))
+            _gameCloseRequested.Clear();
+
+        _nextUnlockAfterCloseRequest = schedule.IsAllowed ? null : schedule.NextTransition;
+        if (schedule.IsAllowed)
+            return;
+
+        var folders = config.GameFolderPaths.Select(NormalizeConfiguredPath).Where(_gameCloseRequested.Add).ToArray();
+        if (folders.Length == 0)
+            return;
+
+        try
+        {
+            await InteractiveGameCloser.RequestAsync(folders, _logger, cancellationToken);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(ex, "Could not request graceful game exit before applying the scheduled folder lock.");
+        }
     }
 
     private async Task RestoreRemovedFoldersAsync(GameLockerConfig? config, CancellationToken cancellationToken)

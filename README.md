@@ -34,6 +34,8 @@ A Windows system service + configuration UI application that enforces a **game a
 3. Add a game folder, choose allowed days, a start time and a duration, then save.
 4. To use vault encryption, enable it and choose the file extensions for that folder.
 
+At cutoff, GameLocker requests a normal close from running games in the configured folders and gives them up to ten seconds to save. Games that remain open after the request can continue running while folder access is restricted.
+
 ---
 
 ## 🎮 Features

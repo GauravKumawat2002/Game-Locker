@@ -50,3 +50,7 @@ On November 19, 2026, the EXE installer created and started the service on a Win
 | Vault mode | Only `.sav` moved to ciphertext. The save and untouched asset matched their original SHA-256 digests after unlock, and the original ACL was restored. |
 
 The follow-up vault regression exercises files held open with delete sharing. Encryption and decryption keep the open source intact until its reader releases it. The retry completes and restores the original save bytes.
+
+In the upgraded installation, the opening and closing transitions were observed 224 ms and 208 ms after their scheduled times. The service requested a normal close in the interactive user session. The synthetic game wrote from its closing handler and exited before GameLocker changed the folder permissions. Opening the vault restored the original bytes and ACL 165 ms after its scheduled start. Separate process tests confirmed that an executable in a sibling directory and an executable reached through an outward junction are outside the managed folder. An identity check rejected an incorrect process creation timestamp.
+
+The close request allows up to ten seconds for a game to save. A game with a save prompt, a disabled window, or no eligible window can remain running after the folder locks.
