@@ -56,3 +56,12 @@ In the upgraded installation, the opening and closing transitions were observed 
 The close request allows up to ten seconds for a game to save. A game with a save prompt, a disabled window, or no eligible window can remain running after the folder locks.
 
 The installed configuration window rendered its schedule, folder list, vault controls, and save controls. Windows integrity isolation blocked automated input to the elevated window. The service checks used its normal saved-configuration and recovery paths, and the test schedule was cleared after the fixture was restored. The upgraded app remains installed.
+
+### Slow vault operations and concurrent folders
+
+A scheduled vault restore could previously cross a cutoff while decrypting, then restore the open ACL before the scheduler ran again. At cutoff, encryption in the first folder could also postpone access restrictions for later folders. Scheduled transfers now check the current window between chunks and before changing permissions or publishing a file. A journal records interrupted work so the scheduler can resume restoration or re-encrypt safely. Each due ACL is applied before vault encryption starts.
+
+- On the installed Windows build, the service locked two disposable folders before publishing ciphertext for a 128 MiB save. A second save held open by a reader kept its original bytes until the reader released it. The vault retried that file successfully. Opening restored both original ACLs and all three SHA-256 digests, including the unselected file. Cleanup removed the fixtures and restored the previous empty schedule.
+- Elevated fixtures verified that cutting off an in-progress restore preserves the restricted ACL and allows safely resuming later. They also exercised ACL-first ordering. The local elevated run passed 115 tests and skipped the installer fixture. Both hosted installer jobs passed. [Windows installer run](https://github.com/GauravKumawat2002/Game-Locker/actions/runs/44446069086)
+- The WinForms preview was exercised with an empty schedule, unsaved hours, the next day, a live boundary, and an all-week schedule. The installed window rendered the preview. Windows integrity isolation still limits automation of its administrator controls.
+- The installed runs used India Standard Time, which has no daylight-saving transition. During a repeated fall-back hour in other time zones, the scheduler still follows local wall-clock time.
