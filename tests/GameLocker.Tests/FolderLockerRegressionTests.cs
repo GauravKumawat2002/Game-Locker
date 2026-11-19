@@ -393,6 +393,106 @@ public sealed class FolderLockerRegressionTests : IDisposable
 
     [Fact]
     [Trait("Category", "Basic")]
+    public async Task InterruptedVaultTransferKeepsTheOriginalCiphertextAndCanRetry()
+    {
+        var original = Path.Combine(_game, "large.sav");
+        var expected = new byte[1024 * 1024];
+        new Random(42).NextBytes(expected);
+        File.WriteAllBytes(original, expected);
+        await _locker.EncryptFolderWithCustomExtensionsAsync(_game, SaveFiles());
+        var ciphertext = original + ".enc";
+        var encrypted = File.ReadAllBytes(ciphertext);
+        var transferChecks = 0;
+
+        await Assert.ThrowsAsync<OperationCanceledException>(() => _locker.UnlockFolderAsync(_game, () =>
+        {
+            if (Directory.EnumerateFiles(_game, "*.gamelocker-tmp").Any() && ++transferChecks == 3)
+                throw new OperationCanceledException();
+        }));
+
+        Assert.Equal(3, transferChecks);
+        Assert.Equal(encrypted, File.ReadAllBytes(ciphertext));
+        Assert.False(File.Exists(original));
+        Assert.Empty(Directory.EnumerateFiles(_game, "*.gamelocker-tmp"));
+        Assert.Equal(["large.sav"], _store.TryLoad(_game)!.VaultFiles);
+
+        var restarted = new FolderLocker(_keys, _store);
+        Assert.Equal(FolderState.Unlocked, (await restarted.UnlockFolderAsync(_game)).State);
+        Assert.Equal(expected, File.ReadAllBytes(original));
+        Assert.False(File.Exists(ciphertext));
+    }
+
+    [RequiresAdminFact]
+    [Trait("Category", "RequiresAdmin")]
+    public async Task CutoffDuringVaultRestoreKeepsPermissionsRestrictedAndRevaultsRestoredData()
+    {
+        var original = Path.Combine(_game, "slot.sav");
+        var ciphertext = original + ".enc";
+        var expected = "vault cutoff save"u8.ToArray();
+        File.WriteAllBytes(original, expected);
+        Assert.Equal(FolderState.Locked, (await _locker.LockFolderAsync(_game, LockMode.AclAndVault, SaveFiles())).State);
+
+        await Assert.ThrowsAsync<OperationCanceledException>(() => _locker.UnlockFolderAsync(_game, () =>
+        {
+            if (File.Exists(original))
+                throw new OperationCanceledException();
+        }));
+
+        Assert.Equal(expected, File.ReadAllBytes(original));
+        Assert.False(File.Exists(ciphertext));
+        Assert.True(FolderAclManager.IsLocked(_game));
+        Assert.Equal(FolderState.Unknown, _locker.GetFolderState(_game));
+        Assert.Equal(_initialAcl.Sddl, _store.TryLoad(_game)!.Acl!.Sddl);
+
+        var restarted = new FolderLocker(_keys, _store);
+        Assert.Equal(FolderState.Locked, (await restarted.LockFolderAsync(_game, LockMode.AclAndVault, SaveFiles())).State);
+        Assert.True(File.Exists(ciphertext));
+        Assert.False(File.Exists(original));
+        Assert.Equal(FolderState.Unlocked, (await restarted.UnlockFolderAsync(_game)).State);
+        Assert.Equal(expected, File.ReadAllBytes(original));
+        Assert.True(FolderAclManager.MatchesSnapshot(_game, _initialAcl));
+    }
+
+    [RequiresAdminFact]
+    [Trait("Category", "RequiresAdmin")]
+    public async Task FolderRestrictionsCanBeAppliedBeforeStartingAnyVaultTransfer()
+    {
+        var secondGame = Directory.CreateDirectory(Path.Combine(_root, "second-game")).FullName;
+        var firstSave = Path.Combine(_game, "one.sav");
+        var secondSave = Path.Combine(secondGame, "two.sav");
+        File.WriteAllText(firstSave, "one");
+        File.WriteAllText(secondSave, "two");
+
+        try
+        {
+            foreach (var folder in new[] { _game, secondGame })
+            {
+                var restriction = await _locker.LockFolderAsync(
+                    folder, LockMode.AclAndVault, SaveFiles(), checkForInterruption: null, deferVault: true);
+                Assert.Null(restriction.LastError);
+                Assert.True(FolderAclManager.IsLocked(folder));
+                Assert.Equal(FolderState.Unknown, _locker.GetFolderState(folder));
+            }
+
+            Assert.True(File.Exists(firstSave));
+            Assert.True(File.Exists(secondSave));
+            Assert.False(File.Exists(firstSave + ".enc"));
+            Assert.False(File.Exists(secondSave + ".enc"));
+
+            Assert.Equal(FolderState.Locked, (await _locker.LockFolderAsync(_game, LockMode.AclAndVault, SaveFiles())).State);
+            Assert.True(FolderAclManager.IsLocked(secondGame));
+            Assert.True(File.Exists(firstSave + ".enc"));
+            Assert.True(File.Exists(secondSave));
+        }
+        finally
+        {
+            await _locker.UnlockFolderAsync(_game);
+            await _locker.UnlockFolderAsync(secondGame);
+        }
+    }
+
+    [Fact]
+    [Trait("Category", "Basic")]
     public async Task VaultRetryRecognizesACrashAfterPublishingTheCiphertext()
     {
         var original = Path.Combine(_game, "slot.sav");

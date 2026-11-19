@@ -76,6 +76,11 @@ public sealed class GameLockerService : BackgroundService
             {
                 break;
             }
+            catch (OperationCanceledException)
+            {
+                // A schedule transition interrupted work. Re-derive the desired state immediately.
+                continue;
+            }
             catch (Exception ex)
             {
                 // A single bad cycle must never take the loop down; the next one re-observes
@@ -123,17 +128,20 @@ public sealed class GameLockerService : BackgroundService
         // Captured after every step that can replace it, so the rest of the cycle works from one
         // consistent view.
         var config = _config;
-        await RestoreRemovedFoldersAsync(config, cancellationToken);
-
         if (config is null || config.GameFolderPaths.Count == 0)
+        {
+            await RestoreRemovedFoldersAsync(config, cancellationToken.ThrowIfCancellationRequested);
             return TickInterval;
+        }
 
-        var schedule = config.GetScheduleState(DateTime.Now);
+        var observedAt = DateTime.Now;
+        var schedule = config.GetScheduleState(observedAt);
         var desired = schedule.IsAllowed ? FolderState.Unlocked : FolderState.Locked;
         await RequestGameClosuresAsync(config, schedule, cancellationToken);
-        if (config.GetScheduleState(DateTime.Now) != schedule)
-            return TimeSpan.Zero;
+        CheckForInterruption();
 
+        var deferVault = desired == FolderState.Locked && config.LockMode == LockMode.AclAndVault;
+        var pendingVault = new List<(string FolderPath, string RetryKey)>();
         var total = config.GameFolderPaths.Count;
         var correct = 0;
         var changed = 0;
@@ -142,15 +150,11 @@ public sealed class GameLockerService : BackgroundService
 
         foreach (var folderPath in config.GameFolderPaths)
         {
-            cancellationToken.ThrowIfCancellationRequested();
+            CheckForInterruption();
             var retryKey = $"{desired}|{folderPath}";
 
             var observed = _folderLocker.GetFolderState(folderPath);
-
-            // Restart from the first folder when the schedule changes so work completed
-            // earlier in the cycle is rechecked too.
-            if (config.GetScheduleState(DateTime.Now) != schedule)
-                return TimeSpan.Zero;
+            CheckForInterruption();
 
             if (observed == desired)
             {
@@ -170,15 +174,56 @@ public sealed class GameLockerService : BackgroundService
                 folderPath, observed, desired);
 
             var error = desired == FolderState.Locked
-                ? await TryLockAsync(folderPath)
-                : await TryUnlockAsync(folderPath);
+                ? await TryLockAsync(folderPath, CheckForInterruption, deferVault)
+                : await TryUnlockAsync(folderPath, CheckForInterruption);
 
-            if (config.GetScheduleState(DateTime.Now) != schedule)
-                return TimeSpan.Zero;
+            CheckForInterruption();
+            if (deferVault && error is null)
+                pendingVault.Add((folderPath, retryKey));
+            else
+                ObserveResult(folderPath, retryKey, error);
+        }
 
+        // Apply all folder restrictions before the first potentially slow vault transfer.
+        foreach (var (folderPath, retryKey) in pendingVault)
+        {
+            CheckForInterruption();
+            var error = await TryLockAsync(folderPath, CheckForInterruption);
+            ObserveResult(folderPath, retryKey, error);
+        }
+
+        if (changed > 0 || failed > 0 || deferred > 0)
+        {
+            _logger.LogInformation(
+                "Reconciled: {Correct}/{Total} correct, {Changed} changed, {Failed} failed, {Deferred} deferred.",
+                correct, total, changed, failed, deferred);
+        }
+
+        CheckForInterruption();
+        var now = DateTime.Now;
+        AnnounceTransition(schedule.IsAllowed, correct, total, now);
+        ShowWarningIfDue(schedule.IsAllowed, now);
+        await RestoreRemovedFoldersAsync(config, CheckForInterruption);
+        return schedule.GetRecheckDelay(DateTime.Now, TickInterval);
+
+        void CheckForInterruption()
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var now = DateTime.Now;
+            if ((now < observedAt || (schedule.NextTransition is { } transition && now >= transition)) &&
+                config.GetScheduleState(now) != schedule)
+            {
+                throw new OperationCanceledException("The gaming schedule changed during reconciliation.");
+            }
+        }
+
+        void ObserveResult(string folderPath, string retryKey, string? error)
+        {
+            CheckForInterruption();
             // Re-observe. The return value of the operation is not evidence: the whole class of
             // "reported success while the folder was untouched" bugs came from believing it.
             var after = _folderLocker.GetFolderState(folderPath);
+            CheckForInterruption();
 
             if (after == desired)
             {
@@ -199,21 +244,6 @@ public sealed class GameLockerService : BackgroundService
                     error ?? "No error was reported.", delay);
             }
         }
-
-        if (changed > 0 || failed > 0 || deferred > 0)
-        {
-            _logger.LogInformation(
-                "Reconciled: {Correct}/{Total} correct, {Changed} changed, {Failed} failed, {Deferred} deferred.",
-                correct, total, changed, failed, deferred);
-        }
-
-        var now = DateTime.Now;
-        if (config.GetScheduleState(now) != schedule)
-            return TimeSpan.Zero;
-
-        AnnounceTransition(schedule.IsAllowed, correct, total, now);
-        ShowWarningIfDue(schedule.IsAllowed, now);
-        return schedule.GetRecheckDelay(DateTime.Now, TickInterval);
     }
 
     private async Task RequestGameClosuresAsync(GameLockerConfig config, ScheduleState schedule, CancellationToken cancellationToken)
@@ -239,7 +269,7 @@ public sealed class GameLockerService : BackgroundService
         }
     }
 
-    private async Task RestoreRemovedFoldersAsync(GameLockerConfig? config, CancellationToken cancellationToken)
+    private async Task RestoreRemovedFoldersAsync(GameLockerConfig? config, Action checkForInterruption)
     {
         var configured = (config?.GameFolderPaths ?? []).Select(NormalizeConfiguredPath)
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
@@ -253,7 +283,7 @@ public sealed class GameLockerService : BackgroundService
 
         foreach (var folder in restore)
         {
-            cancellationToken.ThrowIfCancellationRequested();
+            checkForInterruption();
             var retryKey = $"restore|{folder}";
             var now = DateTime.UtcNow;
             if (!_retryPolicy.ShouldAttempt(retryKey, now))
@@ -265,7 +295,7 @@ public sealed class GameLockerService : BackgroundService
                 continue;
             }
 
-            var error = await TryUnlockAsync(folder);
+            var error = await TryUnlockAsync(folder, checkForInterruption);
             if (error is null)
             {
                 _retryPolicy.RecordSuccess(retryKey);
@@ -373,7 +403,8 @@ public sealed class GameLockerService : BackgroundService
     /// </summary>
     /// <param name="folderPath">The folder to lock.</param>
     /// <returns>The error message, or <c>null</c>.</returns>
-    private async Task<string?> TryLockAsync(string folderPath)
+    private async Task<string?> TryLockAsync(
+        string folderPath, Action? checkForInterruption = null, bool deferVault = false)
     {
         try
         {
@@ -386,11 +417,11 @@ public sealed class GameLockerService : BackgroundService
                 ? config.GetFolderEncryptionSettings(folderPath)
                 : null;
 
-            var result = await _folderLocker.LockFolderAsync(folderPath, mode, vaultSettings);
+            var result = await _folderLocker.LockFolderAsync(folderPath, mode, vaultSettings, checkForInterruption, deferVault);
 
             return result.LastError;
         }
-        catch (Exception ex)
+        catch (Exception ex) when (ex is not OperationCanceledException)
         {
             return ex.Message;
         }
@@ -401,14 +432,14 @@ public sealed class GameLockerService : BackgroundService
     /// </summary>
     /// <param name="folderPath">The folder to unlock.</param>
     /// <returns>The error message, or <c>null</c>.</returns>
-    private async Task<string?> TryUnlockAsync(string folderPath)
+    private async Task<string?> TryUnlockAsync(string folderPath, Action? checkForInterruption = null)
     {
         try
         {
-            var result = await _folderLocker.UnlockFolderAsync(folderPath);
+            var result = await _folderLocker.UnlockFolderAsync(folderPath, checkForInterruption);
             return result.LastError;
         }
-        catch (Exception ex)
+        catch (Exception ex) when (ex is not OperationCanceledException)
         {
             return ex.Message;
         }

@@ -78,13 +78,16 @@ public static class FolderAclManager
     /// <param name="folderPath">The folder to lock.</param>
     /// <exception cref="DirectoryNotFoundException">The folder does not exist.</exception>
     /// <exception cref="InvalidOperationException">The lock could not be verified afterwards.</exception>
-    public static void ApplyLock(string folderPath)
+    public static void ApplyLock(string folderPath) => ApplyLock(folderPath, null);
+
+    internal static void ApplyLock(string folderPath, Action? checkForInterruption)
     {
         if (!Directory.Exists(folderPath))
             throw new DirectoryNotFoundException($"Directory not found: {folderPath}");
 
-        VerifyCompatibleDescendants(folderPath);
+        VerifyCompatibleDescendants(folderPath, checkForInterruption);
         RequireAdministrativeAccess();
+        checkForInterruption?.Invoke();
         new DirectoryInfo(folderPath).SetAccessControl(CreateLockSecurity());
         VerifyLocked(folderPath);
     }
@@ -120,16 +123,18 @@ public static class FolderAclManager
     /// Checks whether existing descendants can safely inherit the folder lock. The lock never
     /// overwrites a descendant's explicit rules or changes a descendant's inheritance policy.
     /// </summary>
-    internal static void VerifyCompatibleDescendants(string folderPath)
+    internal static void VerifyCompatibleDescendants(string folderPath, Action? checkForInterruption = null)
     {
         var directories = new Stack<string>();
         directories.Push(folderPath);
 
         while (directories.TryPop(out var directory))
         {
+            checkForInterruption?.Invoke();
             PathGuard.EnsureNoReparsePoints(directory);
             foreach (var path in Directory.EnumerateFileSystemEntries(directory))
             {
+                checkForInterruption?.Invoke();
                 PathGuard.EnsureNoReparsePoints(path);
                 var isDirectory = File.GetAttributes(path).HasFlag(FileAttributes.Directory);
                 FileSystemSecurity security = isDirectory

@@ -1,3 +1,4 @@
+using System.Buffers;
 using System.Security.Cryptography;
 
 namespace GameLocker.Common.Encryption;
@@ -147,7 +148,11 @@ public static class AesEncryptionHelper
     /// <param name="output">Destination stream for encrypted data.</param>
     /// <param name="key">The AES-256 key (32 bytes).</param>
     /// <param name="iv">The initialization vector (16 bytes).</param>
-    public static void EncryptStream(Stream input, Stream output, byte[] key, byte[] iv, bool leaveOpen = false)
+    public static void EncryptStream(Stream input, Stream output, byte[] key, byte[] iv, bool leaveOpen = false) =>
+        EncryptStream(input, output, key, iv, leaveOpen, null);
+
+    internal static void EncryptStream(
+        Stream input, Stream output, byte[] key, byte[] iv, bool leaveOpen, Action? checkForInterruption)
     {
         ArgumentNullException.ThrowIfNull(input);
         ArgumentNullException.ThrowIfNull(output);
@@ -170,8 +175,7 @@ public static class AesEncryptionHelper
         using var encryptor = aes.CreateEncryptor();
         using var cs = new CryptoStream(output, encryptor, CryptoStreamMode.Write, leaveOpen);
         
-        const int bufferSize = 64 * 1024; // 64KB buffer
-        input.CopyTo(cs, bufferSize);
+        CopyStream(input, cs, checkForInterruption);
         cs.FlushFinalBlock();
     }
 
@@ -183,7 +187,11 @@ public static class AesEncryptionHelper
     /// <param name="output">Destination stream for decrypted data.</param>
     /// <param name="key">The AES-256 key (32 bytes).</param>
     /// <param name="iv">The initialization vector (16 bytes).</param>
-    public static void DecryptStream(Stream input, Stream output, byte[] key, byte[] iv, bool leaveOpen = false)
+    public static void DecryptStream(Stream input, Stream output, byte[] key, byte[] iv, bool leaveOpen = false) =>
+        DecryptStream(input, output, key, iv, leaveOpen, null);
+
+    internal static void DecryptStream(
+        Stream input, Stream output, byte[] key, byte[] iv, bool leaveOpen, Action? checkForInterruption)
     {
         ArgumentNullException.ThrowIfNull(input);
         ArgumentNullException.ThrowIfNull(output);
@@ -206,7 +214,34 @@ public static class AesEncryptionHelper
         using var decryptor = aes.CreateDecryptor();
         using var cs = new CryptoStream(input, decryptor, CryptoStreamMode.Read, leaveOpen);
         
-        const int bufferSize = 64 * 1024; // 64KB buffer
-        cs.CopyTo(output, bufferSize);
+        CopyStream(cs, output, checkForInterruption);
+    }
+
+    internal static void CopyStream(Stream source, Stream destination, Action? checkForInterruption)
+    {
+        const int bufferSize = 64 * 1024;
+        if (checkForInterruption is null)
+        {
+            source.CopyTo(destination, bufferSize);
+            return;
+        }
+
+        var buffer = ArrayPool<byte>.Shared.Rent(bufferSize);
+        try
+        {
+            while (true)
+            {
+                checkForInterruption();
+                var count = source.Read(buffer, 0, bufferSize);
+                if (count == 0)
+                    return;
+
+                destination.Write(buffer, 0, count);
+            }
+        }
+        finally
+        {
+            ArrayPool<byte>.Shared.Return(buffer, clearArray: true);
+        }
     }
 }

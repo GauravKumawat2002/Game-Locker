@@ -81,10 +81,16 @@ public class FolderLocker
         _masterIV = iv;
     }
 
-    public async Task<GameFolderInfo> LockFolderAsync(
+    public Task<GameFolderInfo> LockFolderAsync(
         string folderPath,
         LockMode mode = LockMode.AclOnly,
-        FolderEncryptionSettings? vaultSettings = null)
+        FolderEncryptionSettings? vaultSettings = null) =>
+        LockFolderAsync(folderPath, mode, vaultSettings, null);
+
+    /// <summary>Applies a lock with optional interruption checks and defers vault work when requested.</summary>
+    public async Task<GameFolderInfo> LockFolderAsync(
+        string folderPath, LockMode mode, FolderEncryptionSettings? vaultSettings,
+        Action? checkForInterruption, bool deferVault = false)
     {
         var info = new GameFolderInfo { Path = folderPath, State = FolderState.Unknown };
         FolderStateRecord? record = null;
@@ -92,9 +98,11 @@ public class FolderLocker
 
         try
         {
+            checkForInterruption?.Invoke();
             var path = info.Path = PathGuard.Validate(folderPath);
             operation = _stateStore.BeginOperation(path);
             record = _stateStore.TryLoad(path);
+            checkForInterruption?.Invoke();
             if (record is { TestLock: true })
             {
                 RestorePermissions(record);
@@ -104,6 +112,9 @@ public class FolderLocker
 
             if (record is { AclApplied: true } && record.Acl is not { IsRestorable: true })
                 throw new InvalidDataException("The original permissions are missing from the lock journal.");
+
+            if (deferVault && record is { AclApplied: true, AclTreeValidated: true } && FolderAclManager.IsLocked(path))
+                return info;
 
             if (record is null)
             {
@@ -118,22 +129,31 @@ public class FolderLocker
             record.LockInProgress = true;
             _stateStore.Save(record);
 
+            checkForInterruption?.Invoke();
             if (!FolderAclManager.IsLocked(path))
-                FolderAclManager.ApplyLock(path);
+                FolderAclManager.ApplyLock(path, checkForInterruption);
             else if (!record.AclTreeValidated)
-                FolderAclManager.VerifyCompatibleDescendants(path);
+                FolderAclManager.VerifyCompatibleDescendants(path, checkForInterruption);
 
             record.AclApplied = true;
             record.AclTreeValidated = true;
             if (record.Mode == LockMode.AclAndVault && vaultSettings is not null)
-                await EncryptSelectedFilesAsync(record, vaultSettings);
+            {
+                if (deferVault)
+                {
+                    _stateStore.Save(record);
+                    return info;
+                }
+
+                await EncryptSelectedFilesAsync(record, vaultSettings, checkForInterruption);
+            }
 
             record.LockInProgress = false;
             record.LastError = null;
             _stateStore.Save(record);
             SetFinished(info, FolderState.Locked);
         }
-        catch (Exception ex)
+        catch (Exception ex) when (ex is not OperationCanceledException)
         {
             info.LastError = ex.Message;
             RecordError(record, ex.Message);
@@ -188,15 +208,20 @@ public class FolderLocker
         }
     }
 
-    public async Task<GameFolderInfo> UnlockFolderAsync(string folderPath)
+    public Task<GameFolderInfo> UnlockFolderAsync(string folderPath) => UnlockFolderAsync(folderPath, null);
+
+    /// <summary>Restores vault files and permissions while the caller still wants the folder unlocked.</summary>
+    public async Task<GameFolderInfo> UnlockFolderAsync(string folderPath, Action? checkForInterruption)
     {
         var info = new GameFolderInfo { Path = folderPath };
 
         try
         {
+            checkForInterruption?.Invoke();
             var path = info.Path = PathGuard.Validate(folderPath);
             using var operation = _stateStore.BeginOperation(path);
             var record = _stateStore.TryLoad(path);
+            checkForInterruption?.Invoke();
             if (record is null)
             {
                 UnlockLegacyFolder(path);
@@ -208,18 +233,27 @@ public class FolderLocker
             try
             {
                 if (record.VaultFiles.Count > 0)
-                    await RestoreVaultFilesAsync(record, failures);
+                {
+                    // A resumed lock must vault any originals restored before an interrupted unlock.
+                    if (checkForInterruption is not null && !record.LockInProgress)
+                    {
+                        record.LockInProgress = true;
+                        _stateStore.Save(record);
+                    }
+
+                    await RestoreVaultFilesAsync(record, failures, checkForInterruption);
+                }
             }
-            catch (Exception ex)
+            catch (Exception ex) when (ex is not OperationCanceledException)
             {
                 failures.Add(ex.Message);
             }
 
             try
             {
-                RestorePermissions(record);
+                RestorePermissions(record, checkForInterruption);
             }
-            catch (Exception ex)
+            catch (Exception ex) when (ex is not OperationCanceledException)
             {
                 failures.Add($"Could not restore permissions: {ex.Message}");
             }
@@ -235,7 +269,7 @@ public class FolderLocker
                 _stateStore.Save(record);
             }
         }
-        catch (Exception ex)
+        catch (Exception ex) when (ex is not OperationCanceledException)
         {
             info.LastError = ex.Message;
         }
@@ -243,8 +277,9 @@ public class FolderLocker
         return info;
     }
 
-    private static void RestorePermissions(FolderStateRecord record)
+    private static void RestorePermissions(FolderStateRecord record, Action? checkForInterruption = null)
     {
+        checkForInterruption?.Invoke();
         if (record.Acl is null && !record.AclApplied)
             return;
 
@@ -252,7 +287,10 @@ public class FolderLocker
             throw new InvalidDataException("The original permissions are missing from the lock journal.");
 
         if (!FolderAclManager.MatchesSnapshot(record.FolderPath, snapshot))
+        {
+            checkForInterruption?.Invoke();
             FolderAclManager.Restore(record.FolderPath, snapshot);
+        }
 
         if (!FolderAclManager.MatchesSnapshot(record.FolderPath, snapshot))
             throw new IOException("The folder permissions do not match the original journal snapshot.");
@@ -376,12 +414,14 @@ public class FolderLocker
         return record.VaultFiles.ToList();
     }
 
-    private async Task EncryptSelectedFilesAsync(FolderStateRecord record, FolderEncryptionSettings settings)
+    private async Task EncryptSelectedFilesAsync(
+        FolderStateRecord record, FolderEncryptionSettings settings, Action? checkForInterruption = null)
     {
         var folderPath = record.FolderPath;
         var files = Directory.EnumerateFiles(folderPath, "*", PathGuard.FileEnumerationOptions(recursive: true))
             .Where(file =>
             {
+                checkForInterruption?.Invoke();
                 var name = Path.GetFileName(file);
                 return !string.Equals(name, ".gamelocker", StringComparison.OrdinalIgnoreCase) &&
                     !file.EndsWith(".gamelocker-tmp", StringComparison.OrdinalIgnoreCase) &&
@@ -396,11 +436,12 @@ public class FolderLocker
         var failures = new List<string>();
         foreach (var filePath in files)
         {
+            checkForInterruption?.Invoke();
             try
             {
-                EncryptFile(record, filePath);
+                EncryptFile(record, filePath, checkForInterruption);
             }
-            catch (Exception ex)
+            catch (Exception ex) when (ex is not OperationCanceledException)
             {
                 _logger.LogError(ex, "Could not encrypt {File}", filePath);
                 failures.Add($"{Path.GetRelativePath(folderPath, filePath)}: {ex.Message}");
@@ -411,7 +452,7 @@ public class FolderLocker
             throw new IOException(string.Join(" ", failures));
     }
 
-    private void EncryptFile(FolderStateRecord record, string originalPath)
+    private void EncryptFile(FolderStateRecord record, string originalPath, Action? checkForInterruption)
     {
         var encryptedPath = originalPath + ".enc";
         var relativePath = Path.GetRelativePath(record.FolderPath, originalPath);
@@ -422,8 +463,9 @@ public class FolderLocker
         if (File.Exists(encryptedPath))
         {
             if (record.VaultCiphertextHashes.TryGetValue(relativePath, out var expectedHash) &&
-                CiphertextMatchesOriginal(encryptedPath, expectedHash, original))
+                CiphertextMatchesOriginal(encryptedPath, expectedHash, original, checkForInterruption))
             {
+                checkForInterruption?.Invoke();
                 DeleteOpenedFile(original);
                 return;
             }
@@ -437,12 +479,16 @@ public class FolderLocker
             string hash;
             using (var destination = new FileStream(tempPath, FileMode.CreateNew, FileAccess.ReadWrite, FileShare.None))
             {
-                AesEncryptionHelper.EncryptStream(original, destination, _masterKey!, _masterIV!, leaveOpen: true);
+                AesEncryptionHelper.EncryptStream(
+                    original, destination, _masterKey!, _masterIV!, leaveOpen: true, checkForInterruption);
+                checkForInterruption?.Invoke();
                 destination.Flush(flushToDisk: true);
                 destination.Position = 0;
-                hash = Convert.ToHexString(SHA256.HashData(destination));
+                hash = Convert.ToHexString(HashStream(destination, checkForInterruption));
             }
 
+            // Keep the journal write, ciphertext publish and source removal together.
+            checkForInterruption?.Invoke();
             if (!record.VaultFiles.Contains(relativePath, StringComparer.OrdinalIgnoreCase))
                 record.VaultFiles.Add(relativePath);
 
@@ -458,22 +504,26 @@ public class FolderLocker
         }
     }
 
-    private bool CiphertextMatchesOriginal(string encryptedPath, string expectedHash, Stream original)
+    private bool CiphertextMatchesOriginal(
+        string encryptedPath, string expectedHash, Stream original, Action? checkForInterruption)
     {
         using var ciphertext = File.OpenRead(encryptedPath);
-        VerifyCiphertext(ciphertext, expectedHash);
+        VerifyCiphertext(ciphertext, expectedHash, checkForInterruption);
         using var plainHash = SHA256.Create();
         using var hashStream = new CryptoStream(Stream.Null, plainHash, CryptoStreamMode.Write);
-        AesEncryptionHelper.DecryptStream(ciphertext, hashStream, _masterKey!, _masterIV!, leaveOpen: true);
+        AesEncryptionHelper.DecryptStream(
+            ciphertext, hashStream, _masterKey!, _masterIV!, leaveOpen: true, checkForInterruption);
         hashStream.FlushFinalBlock();
-        return CryptographicOperations.FixedTimeEquals(SHA256.HashData(original), plainHash.Hash!);
+        return CryptographicOperations.FixedTimeEquals(HashStream(original, checkForInterruption), plainHash.Hash!);
     }
 
-    private async Task RestoreVaultFilesAsync(FolderStateRecord record, List<string> failures)
+    private async Task RestoreVaultFilesAsync(
+        FolderStateRecord record, List<string> failures, Action? checkForInterruption)
     {
         Task? loadKeys = null;
         foreach (var relativePath in record.VaultFiles.ToArray())
         {
+            checkForInterruption?.Invoke();
             try
             {
                 var originalPath = ResolveVaultPath(record.FolderPath, relativePath);
@@ -484,7 +534,7 @@ public class FolderLocker
                 {
                     await (loadKeys ??= LoadVaultKeysAsync(create: false));
                     record.VaultCiphertextHashes.TryGetValue(relativePath, out var expectedHash);
-                    RestoreFile(encryptedPath, expectedHash);
+                    RestoreFile(encryptedPath, expectedHash, checkForInterruption);
                 }
                 else if (!File.Exists(originalPath))
                 {
@@ -494,7 +544,7 @@ public class FolderLocker
                 record.VaultFiles.Remove(relativePath);
                 record.VaultCiphertextHashes.Remove(relativePath);
             }
-            catch (Exception ex)
+            catch (Exception ex) when (ex is not OperationCanceledException)
             {
                 failures.Add($"Could not restore '{relativePath}': {ex.Message}");
             }
@@ -517,7 +567,7 @@ public class FolderLocker
         return path;
     }
 
-    private void RestoreFile(string encryptedPath, string? expectedHash)
+    private void RestoreFile(string encryptedPath, string? expectedHash, Action? checkForInterruption = null)
     {
         var originalPath = encryptedPath[..^4];
         PathGuard.EnsureNoReparsePoints(originalPath);
@@ -528,12 +578,14 @@ public class FolderLocker
         {
             using var source = expectedHash is null ? File.OpenRead(encryptedPath) : OpenForReplacement(encryptedPath);
             if (expectedHash is not null)
-                VerifyCiphertext(source, expectedHash);
+                VerifyCiphertext(source, expectedHash, checkForInterruption);
 
             using var existing = File.Exists(originalPath) ? File.OpenRead(originalPath) : null;
             using (var destination = new FileStream(tempPath, FileMode.CreateNew, FileAccess.ReadWrite, FileShare.None))
             {
-                AesEncryptionHelper.DecryptStream(source, destination, _masterKey!, _masterIV!, leaveOpen: true);
+                AesEncryptionHelper.DecryptStream(
+                    source, destination, _masterKey!, _masterIV!, leaveOpen: true, checkForInterruption);
+                checkForInterruption?.Invoke();
                 destination.Flush(flushToDisk: true);
 
                 if (existing is not null)
@@ -542,11 +594,14 @@ public class FolderLocker
                         throw new IOException("An original file already exists. Both copies were kept.");
 
                     destination.Position = 0;
-                    if (!CryptographicOperations.FixedTimeEquals(SHA256.HashData(existing), SHA256.HashData(destination)))
+                    if (!CryptographicOperations.FixedTimeEquals(
+                            HashStream(existing, checkForInterruption), HashStream(destination, checkForInterruption)))
                         throw new IOException("The restored data differs from an existing original. Both copies were kept.");
                 }
             }
 
+            // Keep the plaintext publish and ciphertext removal together.
+            checkForInterruption?.Invoke();
             if (existing is null)
                 File.Move(tempPath, originalPath, overwrite: false);
 
@@ -597,13 +652,25 @@ public class FolderLocker
     private static extern bool SetFileInformationByHandle(SafeFileHandle file, int informationClass,
         ref byte information, int informationSize);
 
-    private static void VerifyCiphertext(Stream source, string expectedHash)
+    private static void VerifyCiphertext(Stream source, string expectedHash, Action? checkForInterruption)
     {
-        var actualHash = Convert.ToHexString(SHA256.HashData(source));
+        var actualHash = Convert.ToHexString(HashStream(source, checkForInterruption));
         if (!string.Equals(actualHash, expectedHash, StringComparison.OrdinalIgnoreCase))
             throw new InvalidDataException("The encrypted copy does not match its journal integrity digest.");
 
         source.Position = 0;
+    }
+
+    private static byte[] HashStream(Stream source, Action? checkForInterruption)
+    {
+        if (checkForInterruption is null)
+            return SHA256.HashData(source);
+
+        using var hash = SHA256.Create();
+        using var destination = new CryptoStream(Stream.Null, hash, CryptoStreamMode.Write);
+        AesEncryptionHelper.CopyStream(source, destination, checkForInterruption);
+        destination.FlushFinalBlock();
+        return hash.Hash!;
     }
 
     private static void SetFinished(GameFolderInfo info, FolderState state)
