@@ -564,7 +564,8 @@ public class FolderLocker
     {
         // Hold the exact source until its replacement is durable. Deny sharing so a busy file
         // stays intact and a rename cannot substitute another file at the original path.
-        var handle = CreateFile(path, GenericRead | DeleteAccess, FileShare.None,
+        var nativePath = path.Length >= 260 ? @"\\?\" + path : path;
+        var handle = CreateFile(nativePath, GenericRead | DeleteAccess, FileShare.None,
             IntPtr.Zero, FileMode.Open, 0, IntPtr.Zero);
         if (handle.IsInvalid)
         {

@@ -89,8 +89,13 @@ public sealed class FolderOwnerRightsTests : IDisposable
             ? new DirectoryInfo(path).GetAccessControl(AccessControlSections.Access)
             : new FileInfo(path).GetAccessControl(AccessControlSections.Access);
 
-    private static string ReadFilePermissions(string path) =>
-        ReadSecurity(path).GetSecurityDescriptorSddlForm(AccessControlSections.Access);
+    private static string ReadFilePermissions(string path)
+    {
+        var descriptor = new RawSecurityDescriptor(ReadSecurity(path).GetSecurityDescriptorBinaryForm(), 0);
+        // Windows can mark a restored DACL as auto-inherited when its entries are propagated.
+        descriptor.SetFlags(descriptor.ControlFlags & ~ControlFlags.DiscretionaryAclAutoInherited);
+        return descriptor.GetSddlForm(AccessControlSections.Access);
+    }
 
     private static bool CanReadPermissions(string path) => AccessPermissions(path, write: false);
 
