@@ -9,7 +9,6 @@ using GameLocker.Common.State;
 
 namespace GameLocker.Tests;
 
-[Trait("Category", "Basic")]
 public sealed class FolderLockerRegressionTests : IDisposable
 {
     private readonly string _root = Path.Combine(Path.GetTempPath(), $"GameLocker_Regression_{Guid.NewGuid():N}");
@@ -36,7 +35,8 @@ public sealed class FolderLockerRegressionTests : IDisposable
         Directory.Delete(_root, recursive: true);
     }
 
-    [Fact]
+    [RequiresAdminFact]
+    [Trait("Category", "RequiresAdmin")]
     public async Task UnlockRestoresAnAclAppliedBeforeItsJournalWasUpdated()
     {
         _store.Save(new FolderStateRecord { FolderPath = _game, Acl = _initialAcl, AclApplied = false });
@@ -49,7 +49,8 @@ public sealed class FolderLockerRegressionTests : IDisposable
         Assert.Null(_store.TryLoad(_game));
     }
 
-    [Fact]
+    [RequiresAdminFact]
+    [Trait("Category", "RequiresAdmin")]
     public async Task RelockRepairsLiveDriftWithoutReplacingTheOriginalSnapshot()
     {
         Assert.Equal(FolderState.Locked, (await _locker.LockFolderAsync(_game)).State);
@@ -64,6 +65,38 @@ public sealed class FolderLockerRegressionTests : IDisposable
     }
 
     [Fact]
+    [Trait("Category", "Basic")]
+    public async Task PreviousLockSignatureCanBeRestoredFromItsJournal()
+    {
+        using var originalPermissions = new FolderOwnerRightsTests.SavedAcl(_game);
+        _store.Save(new FolderStateRecord { FolderPath = _game, Acl = _initialAcl, AclApplied = true, AclTreeValidated = true });
+        new DirectoryInfo(_game).SetAccessControl(FolderOwnerRightsTests.CreatePreviousLockSecurity());
+
+        Assert.Equal(FolderState.Unknown, _locker.GetFolderState(_game));
+        Assert.Equal(FolderState.Unlocked, (await _locker.UnlockFolderAsync(_game)).State);
+        Assert.True(FolderAclManager.MatchesSnapshot(_game, _initialAcl));
+        Assert.Null(_store.TryLoad(_game));
+    }
+
+    [RequiresAdminFact]
+    [Trait("Category", "RequiresAdmin")]
+    public async Task RelockUpgradesThePreviousSignatureAndKeepsItsJournal()
+    {
+        using var originalPermissions = new FolderOwnerRightsTests.SavedAcl(_game);
+        _store.Save(new FolderStateRecord { FolderPath = _game, Acl = _initialAcl, AclApplied = true, AclTreeValidated = true });
+        new DirectoryInfo(_game).SetAccessControl(FolderOwnerRightsTests.CreatePreviousLockSecurity());
+
+        Assert.Equal(FolderState.Unknown, _locker.GetFolderState(_game));
+        Assert.Equal(FolderState.Locked, (await _locker.LockFolderAsync(_game)).State);
+        Assert.True(FolderAclManager.IsLocked(_game));
+        Assert.Equal(_initialAcl.Sddl, _store.TryLoad(_game)!.Acl!.Sddl);
+
+        Assert.Equal(FolderState.Unlocked, (await _locker.UnlockFolderAsync(_game)).State);
+        Assert.True(FolderAclManager.MatchesSnapshot(_game, _initialAcl));
+    }
+
+    [Fact]
+    [Trait("Category", "Basic")]
     public async Task LockRefusesAProtectedChildBeforeChangingPermissions()
     {
         var child = Directory.CreateDirectory(Path.Combine(_game, "separate permissions"));
@@ -81,6 +114,7 @@ public sealed class FolderLockerRegressionTests : IDisposable
     }
 
     [Fact]
+    [Trait("Category", "Basic")]
     public async Task LockRefusesAFileWithItsOwnBroadAllowRule()
     {
         var child = new FileInfo(Path.Combine(_game, "fixture.sav"));
@@ -100,7 +134,8 @@ public sealed class FolderLockerRegressionTests : IDisposable
         Assert.Equal("fixture data", File.ReadAllText(child.FullName));
     }
 
-    [Fact]
+    [RequiresAdminFact]
+    [Trait("Category", "RequiresAdmin")]
     public async Task LockSupportsAnInheritingChildAndRestoresItsAccess()
     {
         var child = Directory.CreateDirectory(Path.Combine(_game, "inheriting child"));
@@ -113,7 +148,8 @@ public sealed class FolderLockerRegressionTests : IDisposable
         Assert.Equal("fixture data", File.ReadAllText(original));
     }
 
-    [Fact]
+    [RequiresAdminFact]
+    [Trait("Category", "RequiresAdmin")]
     public void TestLockRestoresPermissionsWhenTheCallerThrows()
     {
         Assert.Throws<InvalidOperationException>(() => _locker.TestLockFolder(_game, () =>
@@ -127,7 +163,8 @@ public sealed class FolderLockerRegressionTests : IDisposable
         Assert.Null(_store.TryLoad(_game));
     }
 
-    [Fact]
+    [RequiresAdminFact]
+    [Trait("Category", "RequiresAdmin")]
     public async Task ASecondOperationCannotReplaceAnActiveTestJournal()
     {
         Task<GameFolderInfo>? attempt = null;
@@ -148,7 +185,8 @@ public sealed class FolderLockerRegressionTests : IDisposable
         Assert.Null(_store.TryLoad(_game));
     }
 
-    [Fact]
+    [RequiresAdminFact]
+    [Trait("Category", "RequiresAdmin")]
     public async Task AclRecoveryIgnoresDamagedVaultKeys()
     {
         Directory.CreateDirectory(_keys);
@@ -159,7 +197,8 @@ public sealed class FolderLockerRegressionTests : IDisposable
         Assert.True(FolderAclManager.MatchesSnapshot(_game, _initialAcl));
     }
 
-    [Fact]
+    [RequiresAdminFact]
+    [Trait("Category", "RequiresAdmin")]
     public async Task AclRecoveryRunsEvenWhenAPendingVaultFileCannotBeRestored()
     {
         _store.Save(new FolderStateRecord
@@ -180,6 +219,7 @@ public sealed class FolderLockerRegressionTests : IDisposable
     }
 
     [Fact]
+    [Trait("Category", "Basic")]
     public async Task CorruptJournalIsNeverOverwrittenByALockAttempt()
     {
         var path = _store.GetRecordPath(_game);
@@ -195,6 +235,7 @@ public sealed class FolderLockerRegressionTests : IDisposable
     }
 
     [Fact]
+    [Trait("Category", "Basic")]
     public async Task UnmanagedEncryptedExtensionDoesNotTriggerLegacyRecovery()
     {
         var path = Path.Combine(_game, "asset.enc");
@@ -207,6 +248,7 @@ public sealed class FolderLockerRegressionTests : IDisposable
     }
 
     [Fact]
+    [Trait("Category", "Basic")]
     public async Task VaultCollisionKeepsBothCopies()
     {
         var original = Path.Combine(_game, "slot.sav");
@@ -222,6 +264,7 @@ public sealed class FolderLockerRegressionTests : IDisposable
     }
 
     [Theory]
+    [Trait("Category", "Basic")]
     [InlineData(false)]
     [InlineData(true)]
     public async Task MissingVaultKeysAreNotReplacedWhileAnotherFolderHasPendingFiles(bool cachedKeys)
@@ -256,6 +299,7 @@ public sealed class FolderLockerRegressionTests : IDisposable
     }
 
     [Fact]
+    [Trait("Category", "Basic")]
     public async Task MissingVaultKeysAreNotReplacedWhileAnotherJournalIsUnreadable()
     {
         var earlierFolder = Directory.CreateDirectory(Path.Combine(_root, "earlier game")).FullName;
@@ -275,6 +319,7 @@ public sealed class FolderLockerRegressionTests : IDisposable
     }
 
     [Fact]
+    [Trait("Category", "Basic")]
     public async Task VaultRecoveryAfterRestartRestoresMatchingHashesAndKeepsUnselectedFiles()
     {
         var original = Path.Combine(_game, "slot.sav");
@@ -297,6 +342,39 @@ public sealed class FolderLockerRegressionTests : IDisposable
     }
 
     [Fact]
+    [Trait("Category", "Basic")]
+    public async Task VaultKeepsOpenFilesUntilTheirReadersReleaseThem()
+    {
+        var original = Path.Combine(_game, "checkpoint.sav");
+        var ciphertext = original + ".enc";
+        var expected = Enumerable.Range(0, 256).Select(value => (byte)value).ToArray();
+        File.WriteAllBytes(original, expected);
+
+        using (File.Open(original, FileMode.Open, FileAccess.Read, FileShare.Read | FileShare.Delete))
+        {
+            Assert.Empty(await _locker.EncryptFolderWithCustomExtensionsAsync(_game, SaveFiles()));
+            Assert.Equal(expected, File.ReadAllBytes(original));
+            Assert.False(File.Exists(ciphertext));
+        }
+
+        Assert.Equal(["checkpoint.sav"], await _locker.EncryptFolderWithCustomExtensionsAsync(_game, SaveFiles()));
+        var encrypted = File.ReadAllBytes(ciphertext);
+
+        using (File.Open(ciphertext, FileMode.Open, FileAccess.Read, FileShare.Read | FileShare.Delete))
+        {
+            var busy = await _locker.UnlockFolderAsync(_game);
+            Assert.NotEqual(FolderState.Unlocked, busy.State);
+            Assert.Equal(encrypted, File.ReadAllBytes(ciphertext));
+            Assert.False(File.Exists(original));
+        }
+
+        Assert.Equal(FolderState.Unlocked, (await _locker.UnlockFolderAsync(_game)).State);
+        Assert.Equal(expected, File.ReadAllBytes(original));
+        Assert.False(File.Exists(ciphertext));
+    }
+
+    [Fact]
+    [Trait("Category", "Basic")]
     public async Task VaultRecoveryKeepsAnExistingDifferentOriginalAndItsCiphertext()
     {
         var original = Path.Combine(_game, "slot.sav");
@@ -314,6 +392,7 @@ public sealed class FolderLockerRegressionTests : IDisposable
     }
 
     [Fact]
+    [Trait("Category", "Basic")]
     public async Task VaultRetryRecognizesACrashAfterPublishingTheCiphertext()
     {
         var original = Path.Combine(_game, "slot.sav");
@@ -327,6 +406,7 @@ public sealed class FolderLockerRegressionTests : IDisposable
     }
 
     [Fact]
+    [Trait("Category", "Basic")]
     public async Task VaultRecoveryKeepsBothCopiesWhenIntegrityVerificationFails()
     {
         var original = Path.Combine(_game, "slot.sav");
@@ -343,6 +423,7 @@ public sealed class FolderLockerRegressionTests : IDisposable
     }
 
     [Fact]
+    [Trait("Category", "Basic")]
     public async Task LegacyRecoveryKeepsItsUnauthenticatedEncryptedSource()
     {
         await _locker.InitializeAsync();
@@ -360,6 +441,7 @@ public sealed class FolderLockerRegressionTests : IDisposable
     }
 
     [Fact]
+    [Trait("Category", "Basic")]
     public async Task MissingConfigSidecarsAreReportedAndTheOriginalFileIsPreserved()
     {
         var path = Directory.CreateDirectory(Path.Combine(_root, "config")).FullName;
@@ -372,6 +454,7 @@ public sealed class FolderLockerRegressionTests : IDisposable
     }
 
     [Fact]
+    [Trait("Category", "Basic")]
     public async Task EmptyScheduleSavesAndRetainsThePreviousSettingsAsBackup()
     {
         var manager = new ConfigManager(Path.Combine(_root, "config"));

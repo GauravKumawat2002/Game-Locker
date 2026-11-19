@@ -1,3 +1,5 @@
+using System.ComponentModel;
+using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using GameLocker.Common.Encryption;
 using GameLocker.Common.Models;
@@ -5,12 +7,17 @@ using GameLocker.Common.Security;
 using GameLocker.Common.State;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Win32.SafeHandles;
 
 namespace GameLocker.Common.Services;
 
 /// <summary>Locks and restores folders using a durable ACL and vault journal.</summary>
 public class FolderLocker
 {
+    private const uint GenericRead = 0x80000000;
+    private const uint DeleteAccess = 0x00010000;
+    private const int FileDispositionInfo = 4;
+
     private readonly string _keyStorePath;
     private readonly FolderStateStore _stateStore;
     private readonly ILogger _logger;
@@ -411,13 +418,13 @@ public class FolderLocker
         PathGuard.EnsureNoReparsePoints(originalPath);
         PathGuard.EnsureNoReparsePoints(encryptedPath);
 
-        using var original = new FileStream(originalPath, FileMode.Open, FileAccess.Read, FileShare.Read | FileShare.Delete);
+        using var original = OpenForReplacement(originalPath);
         if (File.Exists(encryptedPath))
         {
             if (record.VaultCiphertextHashes.TryGetValue(relativePath, out var expectedHash) &&
                 CiphertextMatchesOriginal(encryptedPath, expectedHash, original))
             {
-                File.Delete(originalPath);
+                DeleteOpenedFile(original);
                 return;
             }
 
@@ -443,7 +450,7 @@ public class FolderLocker
             _stateStore.Save(record);
 
             File.Move(tempPath, encryptedPath, overwrite: false);
-            File.Delete(originalPath);
+            DeleteOpenedFile(original);
         }
         finally
         {
@@ -519,7 +526,7 @@ public class FolderLocker
 
         try
         {
-            using var source = new FileStream(encryptedPath, FileMode.Open, FileAccess.Read, FileShare.Read | FileShare.Delete);
+            using var source = expectedHash is null ? File.OpenRead(encryptedPath) : OpenForReplacement(encryptedPath);
             if (expectedHash is not null)
                 VerifyCiphertext(source, expectedHash);
 
@@ -545,13 +552,49 @@ public class FolderLocker
 
             // Legacy ciphertext lacks an integrity digest, so it remains available for recovery.
             if (expectedHash is not null)
-                File.Delete(encryptedPath);
+                DeleteOpenedFile(source);
         }
         finally
         {
             File.Delete(tempPath);
         }
     }
+
+    private static FileStream OpenForReplacement(string path)
+    {
+        // Hold the exact source until its replacement is durable. Deny sharing so a busy file
+        // stays intact and a rename cannot substitute another file at the original path.
+        var handle = CreateFile(path, GenericRead | DeleteAccess, FileShare.None,
+            IntPtr.Zero, FileMode.Open, 0, IntPtr.Zero);
+        if (handle.IsInvalid)
+        {
+            var error = new Win32Exception(Marshal.GetLastWin32Error());
+            handle.Dispose();
+            throw new IOException($"Could not open the file for vault replacement: {error.Message}", error);
+        }
+
+        return new FileStream(handle, FileAccess.Read);
+    }
+
+    private static void DeleteOpenedFile(FileStream source)
+    {
+        // Windows removes this file when the exclusive handle closes.
+        byte deleteFile = 1;
+        if (!SetFileInformationByHandle(source.SafeFileHandle, FileDispositionInfo, ref deleteFile, sizeof(byte)))
+        {
+            var error = new Win32Exception(Marshal.GetLastWin32Error());
+            throw new IOException($"Could not remove the replaced vault file: {error.Message}", error);
+        }
+    }
+
+    [DllImport("kernel32.dll", EntryPoint = "CreateFileW", CharSet = CharSet.Unicode, ExactSpelling = true, SetLastError = true)]
+    private static extern SafeFileHandle CreateFile(string path, uint access, FileShare share,
+        IntPtr securityAttributes, FileMode mode, uint flags, IntPtr template);
+
+    [DllImport("kernel32.dll", ExactSpelling = true, SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool SetFileInformationByHandle(SafeFileHandle file, int informationClass,
+        ref byte information, int informationSize);
 
     private static void VerifyCiphertext(Stream source, string expectedHash)
     {

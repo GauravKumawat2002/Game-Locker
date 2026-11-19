@@ -15,17 +15,21 @@ namespace GameLocker.Common.Security;
 /// group - and a Deny of <c>FullControl</c> includes <c>WRITE_DAC</c>, the one right needed to undo
 /// it. See ARCHITECTURE-REVIEW.md findings [P-1], [P-2] and [P-4].
 /// <para>
-/// Instead, locking installs a <em>protected</em> access control list granting only SYSTEM and
-/// Administrators. Under User Account Control an administrator's ordinary logon token carries the
-/// Administrators group as deny-only, so it cannot be used to gain access: Explorer, the game, and
-/// any non-elevated process are refused. An elevated process, the service, and this tool all retain
-/// full access, so recovery never requires taking ownership.
+/// Locking grants full access to SYSTEM and Administrators, and ACL inspection to the owner.
+/// The OWNER RIGHTS entry suppresses the implicit right to change permissions. Under User Account
+/// Control an administrator's ordinary token cannot exercise the Administrators grant.
 /// </para>
 /// </remarks>
 public static class FolderAclManager
 {
     private const InheritanceFlags FolderInheritance =
         InheritanceFlags.ContainerInherit | InheritanceFlags.ObjectInherit;
+    private const AceFlags FolderAceFlags = AceFlags.ContainerInherit | AceFlags.ObjectInherit;
+    private const FileSystemRights OwnerReadRights = FileSystemRights.ReadPermissions | FileSystemRights.Synchronize;
+
+    private static readonly SecurityIdentifier SystemSid = new(WellKnownSidType.LocalSystemSid, null);
+    private static readonly SecurityIdentifier AdministratorsSid = new(WellKnownSidType.BuiltinAdministratorsSid, null);
+    private static readonly SecurityIdentifier OwnerRightsSid = new(WellKnownSidType.WinCreatorOwnerRightsSid, null);
 
     /// <summary>
     /// Captures a folder's current access control state so it can be restored exactly.
@@ -80,29 +84,36 @@ public static class FolderAclManager
             throw new DirectoryNotFoundException($"Directory not found: {folderPath}");
 
         VerifyCompatibleDescendants(folderPath);
+        RequireAdministrativeAccess();
+        new DirectoryInfo(folderPath).SetAccessControl(CreateLockSecurity());
+        VerifyLocked(folderPath);
+    }
+
+    internal static void RequireAdministrativeAccess()
+    {
+        using var identity = WindowsIdentity.GetCurrent();
+        if (!identity.IsSystem && !new WindowsPrincipal(identity).IsInRole(WindowsBuiltInRole.Administrator))
+            throw new UnauthorizedAccessException("Applying the GameLocker lock requires an elevated administrator or LocalSystem token.");
+    }
+
+    internal static DirectorySecurity CreateLockSecurity()
+    {
         var security = new DirectorySecurity();
 
         // Protected: stop inheriting the permissive entries from the parent, and do not copy them
         // down. Everything the folder had is in the snapshot taken before this call.
         security.SetAccessRuleProtection(isProtected: true, preserveInheritance: false);
 
-        security.AddAccessRule(new FileSystemAccessRule(
-            new SecurityIdentifier(WellKnownSidType.LocalSystemSid, null),
-            FileSystemRights.FullControl,
-            FolderInheritance,
-            PropagationFlags.None,
-            AccessControlType.Allow));
+        security.AddAccessRule(new FileSystemAccessRule(SystemSid, FileSystemRights.FullControl,
+            FolderInheritance, PropagationFlags.None, AccessControlType.Allow));
+        security.AddAccessRule(new FileSystemAccessRule(AdministratorsSid, FileSystemRights.FullControl,
+            FolderInheritance, PropagationFlags.None, AccessControlType.Allow));
 
-        security.AddAccessRule(new FileSystemAccessRule(
-            new SecurityIdentifier(WellKnownSidType.BuiltinAdministratorsSid, null),
-            FileSystemRights.FullControl,
-            FolderInheritance,
-            PropagationFlags.None,
-            AccessControlType.Allow));
-
-        new DirectoryInfo(folderPath).SetAccessControl(security);
-
-        VerifyLocked(folderPath);
+        // An OWNER RIGHTS ACE replaces the owner's implicit READ_CONTROL and WRITE_DAC rights.
+        // Grant ACL inspection and synchronization, and let SYSTEM and Administrators recover.
+        security.AddAccessRule(new FileSystemAccessRule(OwnerRightsSid, OwnerReadRights,
+            FolderInheritance, PropagationFlags.None, AccessControlType.Allow));
+        return security;
     }
 
     /// <summary>
@@ -111,8 +122,6 @@ public static class FolderAclManager
     /// </summary>
     internal static void VerifyCompatibleDescendants(string folderPath)
     {
-        var system = new SecurityIdentifier(WellKnownSidType.LocalSystemSid, null);
-        var admins = new SecurityIdentifier(WellKnownSidType.BuiltinAdministratorsSid, null);
         var directories = new Stack<string>();
         directories.Push(folderPath);
 
@@ -131,7 +140,7 @@ public static class FolderAclManager
                     .GetAccessRules(includeExplicit: true, includeInherited: false, typeof(SecurityIdentifier))
                     .Cast<FileSystemAccessRule>()
                     .Any(rule => rule.AccessControlType != AccessControlType.Allow ||
-                        (!rule.IdentityReference.Equals(system) && !rule.IdentityReference.Equals(admins)));
+                        (!rule.IdentityReference.Equals(SystemSid) && !rule.IdentityReference.Equals(AdministratorsSid)));
 
                 if (incompatible)
                     throw new InvalidOperationException($"Folder cannot be locked safely because '{path}' has separate permissions.");
@@ -259,28 +268,26 @@ public static class FolderAclManager
         if (!security.AreAccessRulesProtected)
             return "the access rules are not protected, so permissions are still inherited from the parent folder";
 
-        var systemSid = new SecurityIdentifier(WellKnownSidType.LocalSystemSid, null);
-        var adminsSid = new SecurityIdentifier(WellKnownSidType.BuiltinAdministratorsSid, null);
-        var expected = new HashSet<IdentityReference> { systemSid, adminsSid };
+        var acl = new RawSecurityDescriptor(security.GetSecurityDescriptorBinaryForm(), 0).DiscretionaryAcl;
+        if (acl is null || acl.Count != 3)
+            return "SYSTEM, Administrators, and OWNER RIGHTS must each have one access rule";
 
-        foreach (FileSystemAccessRule rule in security.GetAccessRules(
-                     includeExplicit: true,
-                     includeInherited: true,
-                     targetType: typeof(SecurityIdentifier)))
+        var expected = new Dictionary<SecurityIdentifier, FileSystemRights>
         {
-            if (rule.IsInherited || rule.AccessControlType != AccessControlType.Allow ||
-                rule.FileSystemRights != FileSystemRights.FullControl ||
-                rule.InheritanceFlags != FolderInheritance || rule.PropagationFlags != PropagationFlags.None ||
-                !expected.Remove(rule.IdentityReference))
+            [SystemSid] = FileSystemRights.FullControl,
+            [AdministratorsSid] = FileSystemRights.FullControl,
+            [OwnerRightsSid] = OwnerReadRights,
+        };
+
+        foreach (GenericAce rule in acl)
+        {
+            if (rule is not CommonAce ace || ace.AceType != AceType.AccessAllowed ||
+                ace.AceFlags != FolderAceFlags || !expected.Remove(ace.SecurityIdentifier, out var rights) ||
+                ace.AccessMask != (int)rights)
             {
-                return $"an unexpected access rule is present for '{rule.IdentityReference.Value}'";
+                return "an access rule differs from the expected lock permissions";
             }
         }
-
-        // Without this the service could not unlock the folder it just locked - the exact failure
-        // that made folders unrecoverable in v1.2.0.
-        if (expected.Count != 0)
-            return "SYSTEM and Administrators must both hold full control";
 
         return null;
     }

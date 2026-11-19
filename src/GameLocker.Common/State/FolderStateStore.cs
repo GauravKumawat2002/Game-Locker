@@ -1,6 +1,5 @@
 using System.Security.AccessControl;
 using System.Security.Cryptography;
-using System.Security.Principal;
 using System.Text;
 using System.Text.Json;
 using GameLocker.Common.Security;
@@ -89,32 +88,21 @@ public sealed class FolderStateStore
     public bool EnsureSecured()
     {
         PathGuard.EnsureNoReparsePoints(_stateDirectory);
-        Directory.CreateDirectory(_stateDirectory);
 
-        if (!_hardenPermissions || FolderAclManager.IsLocked(_stateDirectory))
+        if (!_hardenPermissions)
+        {
+            Directory.CreateDirectory(_stateDirectory);
             return true;
+        }
 
         try
         {
-            var security = new DirectorySecurity();
-            security.SetAccessRuleProtection(isProtected: true, preserveInheritance: false);
+            FolderAclManager.RequireAdministrativeAccess();
+            Directory.CreateDirectory(_stateDirectory);
+            if (!FolderAclManager.IsLocked(_stateDirectory))
+                new DirectoryInfo(_stateDirectory).SetAccessControl(FolderAclManager.CreateLockSecurity());
 
-            security.AddAccessRule(new FileSystemAccessRule(
-                new SecurityIdentifier(WellKnownSidType.LocalSystemSid, null),
-                FileSystemRights.FullControl,
-                InheritanceFlags.ContainerInherit | InheritanceFlags.ObjectInherit,
-                PropagationFlags.None,
-                AccessControlType.Allow));
-
-            security.AddAccessRule(new FileSystemAccessRule(
-                new SecurityIdentifier(WellKnownSidType.BuiltinAdministratorsSid, null),
-                FileSystemRights.FullControl,
-                InheritanceFlags.ContainerInherit | InheritanceFlags.ObjectInherit,
-                PropagationFlags.None,
-                AccessControlType.Allow));
-
-            new DirectoryInfo(_stateDirectory).SetAccessControl(security);
-            return true;
+            return FolderAclManager.IsLocked(_stateDirectory);
         }
         catch (Exception ex) when (ex is UnauthorizedAccessException or PrivilegeNotHeldException)
         {
