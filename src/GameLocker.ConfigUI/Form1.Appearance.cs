@@ -3,6 +3,7 @@
 public partial class Form1
 {
     private readonly List<Action> _appearanceBindings = [];
+    private readonly PrintScreenShortcut _printScreenShortcut = new();
     private readonly WorkspaceThemePreferences _themePreferences;
     private WorkspaceThemeMode _themeMode;
     internal WorkspaceTheme Theme { get; private set; }
@@ -67,9 +68,15 @@ public partial class Form1
         RefreshAppearance();
     }
 
+    protected override void OnHandleDestroyed(EventArgs e)
+    {
+        _printScreenShortcut.Release();
+        base.OnHandleDestroyed(e);
+    }
+
     protected override void WndProc(ref Message message)
     {
-        if (HandleChrome(ref message))
+        if (HandleChrome(ref message) || _printScreenShortcut.Handle(message))
             return;
 
         base.WndProc(ref message);

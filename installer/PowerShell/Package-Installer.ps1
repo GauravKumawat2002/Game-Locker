@@ -31,6 +31,14 @@ foreach ($component in $components.GetEnumerator()) {
     if ($LASTEXITCODE -ne 0) {
         throw "Failed to publish $($component.Value) with exit code $LASTEXITCODE."
     }
+    if ($component.Key -eq 'configui') {
+        foreach ($extension in @('exe', 'dll', 'deps.json', 'runtimeconfig.json', 'pdb')) {
+            $oldFile = Join-Path $publishPath "GameLocker.ConfigUI.$extension"
+            if (Test-Path -LiteralPath $oldFile -PathType Leaf) {
+                Remove-Item -LiteralPath $oldFile -Force
+            }
+        }
+    }
 }
 
 Write-Host "Copying files to installer package..." -ForegroundColor Cyan

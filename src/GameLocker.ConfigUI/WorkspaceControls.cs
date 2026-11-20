@@ -2,7 +2,7 @@ using System.Drawing.Drawing2D;
 
 namespace GameLocker.ConfigUI;
 
-internal enum WorkspaceGlyph { Locker, Folder, Files, Link, Minimize, Maximize, Restore, Close }
+internal enum WorkspaceGlyph { Locker, Folder, Files, Minimize, Maximize, Restore, Close }
 
 internal static class WorkspacePaint
 {
@@ -36,17 +36,6 @@ internal static class WorkspacePaint
                 graphics.DrawLines(pen, new Point[] { new(14, 4), new(14, 9), new(19, 9) });
                 graphics.DrawLine(pen, 8, 13, 16, 13);
                 graphics.DrawLine(pen, 8, 16, 14, 16);
-                break;
-            case WorkspaceGlyph.Link:
-                graphics.TranslateTransform(12, 12);
-                graphics.RotateTransform(-45);
-                graphics.DrawArc(pen, -11, -4, 8, 8, 90, 180);
-                graphics.DrawArc(pen, 3, -4, 8, 8, 270, 180);
-                graphics.DrawLine(pen, -7, -4, -2, -4);
-                graphics.DrawLine(pen, -7, 4, -2, 4);
-                graphics.DrawLine(pen, 2, -4, 7, -4);
-                graphics.DrawLine(pen, 2, 4, 7, 4);
-                graphics.DrawLine(pen, -4, 0, 4, 0);
                 break;
             case WorkspaceGlyph.Minimize:
                 graphics.DrawLine(pen, 3, 12, 21, 12);
@@ -153,6 +142,7 @@ internal sealed class WorkspaceButton : Button
     private bool _hovered;
 
     public WorkspaceGlyph? Symbol { get; set; }
+    public int ImageSize { get; init; } = 27;
 
     public WorkspaceButton(string text, bool primary = false, bool danger = false, bool bare = false)
     {
@@ -194,7 +184,7 @@ internal sealed class WorkspaceButton : Button
         var center = hasSymbol && Text.Length > 0 ? LogicalToDeviceUnits(18) : Width / 2;
         if (Image is { } logo)
         {
-            var scale = (float)LogicalToDeviceUnits(27) / Math.Max(logo.Width, logo.Height);
+            var scale = (float)LogicalToDeviceUnits(ImageSize) / Math.Max(logo.Width, logo.Height);
             var width = (int)Math.Round(logo.Width * scale);
             var height = (int)Math.Round(logo.Height * scale);
             var bounds = new Rectangle(center - width / 2, (Height - height) / 2, width, height);
@@ -203,15 +193,9 @@ internal sealed class WorkspaceButton : Button
         }
         else if (Symbol is { } symbol)
         {
-            var size = LogicalToDeviceUnits(symbol switch
-            {
-                WorkspaceGlyph.Locker => 45,
-                WorkspaceGlyph.Link => 29,
-                _ => 18,
-            });
-            var color = symbol == WorkspaceGlyph.Locker && !theme.HighContrast ? theme.Pink : foreground;
+            var size = LogicalToDeviceUnits(18);
             WorkspacePaint.Glyph(e.Graphics, symbol, new Rectangle(center - size / 2, (Height - size) / 2, size, size),
-                color, background);
+                foreground, background);
         }
         if (Text.Length > 0)
         {

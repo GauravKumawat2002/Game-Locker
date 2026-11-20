@@ -69,9 +69,10 @@
 
       <!-- Config UI -->
       <Component Id="ConfigUI" Guid="*">
-        <File Id="GameLockerConfigUIExe" Source="$(var.PublishDir)\GameLocker.ConfigUI.exe" KeyPath="yes" />
-        <File Id="GameLockerConfigUIDeps" Source="$(var.PublishDir)\GameLocker.ConfigUI.deps.json" />
-        <File Id="GameLockerConfigUIRuntimeConfig" Source="$(var.PublishDir)\GameLocker.ConfigUI.runtimeconfig.json" />
+        <File Id="GameLockerConfigUIExe" Source="$(var.PublishDir)\GameLocker.exe" KeyPath="yes" />
+        <File Id="GameLockerConfigUIDll" Source="$(var.PublishDir)\GameLocker.dll" />
+        <File Id="GameLockerConfigUIDeps" Source="$(var.PublishDir)\GameLocker.deps.json" />
+        <File Id="GameLockerConfigUIRuntimeConfig" Source="$(var.PublishDir)\GameLocker.runtimeconfig.json" />
         <!-- Desktop shortcut -->
         <Shortcut Id="ConfigUIDesktopShortcut" Directory="DesktopFolder" Name="GameLocker Configuration" 
                   Target="[#GameLockerConfigUIExe]" WorkingDirectory="INSTALLFOLDER" />

@@ -136,7 +136,7 @@ dotnet publish src/GameLocker.ConfigUI -c Release -r win-x64 --self-contained tr
 dotnet run --project src/GameLocker.ConfigUI
 
 # Or run the compiled executable
-./src/GameLocker.ConfigUI/bin/Debug/net8.0-windows10.0.17763.0/GameLocker.ConfigUI.exe
+./src/GameLocker.ConfigUI/bin/Debug/net8.0-windows10.0.17763.0/GameLocker.exe
 ```
 
 > **Note**: Run as Administrator for full ACL functionality.

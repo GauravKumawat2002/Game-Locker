@@ -11,6 +11,8 @@ namespace GameLocker.ConfigUI;
 public partial class Form1 : Form
 {
     private readonly ConfigManager _configManager;
+    private readonly Icon _applicationIcon;
+    private readonly Bitmap _brandImage;
     private readonly FileExtensionScanner _extensionScanner = new();
     private readonly Dictionary<string, FolderEncryptionSettings> _folderSettings = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, ExtensionScanResult> _scanResults = new(StringComparer.OrdinalIgnoreCase);
@@ -34,6 +36,11 @@ public partial class Form1 : Form
     internal Form1(ConfigManager configManager, WorkspaceThemePreferences? themePreferences = null)
     {
         _configManager = configManager;
+        using var iconStream = typeof(Form1).Assembly.GetManifestResourceStream("GameLocker.ConfigUI.GameLocker.ico")
+            ?? throw new InvalidOperationException("The GameLocker icon is missing.");
+        _applicationIcon = new Icon(iconStream, 48, 48);
+        _brandImage = _applicationIcon.ToBitmap();
+        Icon = _applicationIcon;
         _themePreferences = themePreferences ?? new WorkspaceThemePreferences();
         _themeMode = _themePreferences.Read();
         Theme = ReadTheme();
@@ -62,6 +69,11 @@ public partial class Form1 : Form
                 menu.Dispose();
         }
         base.Dispose(disposing);
+        if (disposing)
+        {
+            _brandImage.Dispose();
+            _applicationIcon.Dispose();
+        }
     }
 
     private async void LoadConfiguration(object? sender, EventArgs e)

@@ -285,7 +285,7 @@ Test-Path "G:\games\TestGame\.gamelocker"
 1. **Run as Administrator:**
 
     ```powershell
-    Start-Process "C:\Program Files\GameLocker\configui\GameLocker.ConfigUI.exe" -Verb RunAs
+    Start-Process "C:\Program Files\GameLocker\configui\GameLocker.exe" -Verb RunAs
     ```
 
 2. **Check dependencies:**

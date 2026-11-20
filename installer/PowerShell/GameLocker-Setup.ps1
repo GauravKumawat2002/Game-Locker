@@ -63,9 +63,11 @@ $RecoveryPath = Join-Path $InstallPath "Recovery"
 $LogPath = Join-Path $InstallPath "Logs"
 $DataPath = Join-Path $env:ProgramData "GameLocker"
 $PublishPath = Join-Path $ScriptDir 'publish'
+$LegacyConfigName = 'GameLocker.ConfigUI'
+$LegacyConfigPath = Join-Path $ConfigPath "$LegacyConfigName.exe"
 $Payload = [ordered]@{
     service = @{ Directory = $ServicePath; Executable = 'GameLocker.Service.exe' }
-    configui = @{ Directory = $ConfigPath; Executable = 'GameLocker.ConfigUI.exe' }
+    configui = @{ Directory = $ConfigPath; Executable = 'GameLocker.exe' }
     recovery = @{ Directory = $RecoveryPath; Executable = 'GameLocker.Recovery.exe' }
 }
 
@@ -131,6 +133,12 @@ function Copy-Files {
         $source = Join-Path $PublishPath $component.Key
         Copy-Item -Path (Join-Path $source '*') -Destination $component.Value.Directory -Recurse -Force
     }
+    foreach ($extension in @('exe', 'dll', 'deps.json', 'runtimeconfig.json', 'pdb')) {
+        $oldFile = Join-Path $ConfigPath "$LegacyConfigName.$extension"
+        if (Test-Path -LiteralPath $oldFile -PathType Leaf) {
+            Remove-Item -LiteralPath $oldFile -Force
+        }
+    }
 }
 
 function Install-Service {
@@ -167,7 +175,7 @@ function Configure-Service {
         InstallPath = $InstallPath
         DataPath = $DataPath
         LogPath = $LogPath
-        ConfigUIPath = Join-Path $ConfigPath "GameLocker.ConfigUI.exe"
+        ConfigUIPath = Join-Path $ConfigPath $Payload.configui.Executable
         Version = "1.0.0"
         InstallDate = (Get-Date).ToString("yyyy-MM-dd HH:mm:ss")
     }
@@ -213,7 +221,7 @@ function Create-StartMenuShortcuts {
         
         # Config UI shortcut
         $configShortcut = $shell.CreateShortcut((Join-Path $gameLockFolder "GameLocker Configuration.lnk"))
-        $configShortcut.TargetPath = Join-Path $ConfigPath "GameLocker.ConfigUI.exe"
+        $configShortcut.TargetPath = Join-Path $ConfigPath $Payload.configui.Executable
         $configShortcut.WorkingDirectory = $ConfigPath
         $configShortcut.Description = "Configure GameLocker settings"
         $configShortcut.IconLocation = "$shortcutIcon,0"
@@ -388,11 +396,16 @@ try {
                 throw "Installation directory is not an ordinary directory: $($component.Value.Directory)"
             }
             $installedBinary = Join-Path $component.Value.Directory $component.Value.Executable
-            if (!(Test-Path -LiteralPath $installedBinary -PathType Leaf) -and
+            $isLegacyConfigUI = $component.Key -eq 'configui' -and
+                (Test-Path -LiteralPath $LegacyConfigPath -PathType Leaf)
+            if (!$isLegacyConfigUI -and !(Test-Path -LiteralPath $installedBinary -PathType Leaf) -and
                 (Get-ChildItem -LiteralPath $component.Value.Directory -Force | Select-Object -First 1)) {
                 throw "Installation would overwrite an unrelated folder: $($component.Value.Directory)"
             }
         }
+    }
+    if (Get-Process -Name $LegacyConfigName -ErrorAction SilentlyContinue | Where-Object Path -eq $LegacyConfigPath) {
+        throw 'Close GameLocker Configuration before upgrading.'
     }
 
     # Installation steps

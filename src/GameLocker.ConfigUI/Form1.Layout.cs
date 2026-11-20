@@ -108,7 +108,7 @@ public partial class Form1
         var menu = CreateMenu(_notifications, _clear);
         var options = new WorkspaceButton("", bare: true)
         {
-            Symbol = WorkspaceGlyph.Locker, Size = new Size(45, 46),
+            Image = _brandImage, ImageSize = 37, Size = new Size(45, 46),
             Anchor = AnchorStyles.Left, Margin = Padding.Empty,
             AccessibleName = "Configuration options",
         };
@@ -613,24 +613,22 @@ public partial class Form1
     {
         var links = Grid(5, 1);
         links.Anchor = AnchorStyles.Left;
-        links.Size = new Size(515, 34);
+        links.Size = new Size(375, 34);
         var column = 0;
         foreach (var link in ProjectLinks.All)
         {
             var website = link.Label == "Website";
             var label = website ? "Portfolio website" : link.Label;
-            var width = website ? 222 : column == 0 ? 130 : 161;
+            var width = website ? 82 : column == 0 ? 130 : 161;
             links.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, width));
-            var control = new WorkspaceButton(label, bare: true)
+            var control = new WorkspaceButton(website ? "" : label, bare: true)
             {
-                Symbol = website ? WorkspaceGlyph.Link : null,
                 Font = WorkspaceTheme.Link, Dock = DockStyle.Fill,
-                Margin = column == 0 ? Padding.Empty : new Padding(22, 0, 0, 0),
-                Image = website ? null : link.Logo(Theme), AccessibleRole = AccessibleRole.Link,
+                Margin = column == 0 || website ? Padding.Empty : new Padding(22, 0, 0, 0),
+                Image = link.Logo(Theme), ImageSize = website ? 32 : 27, AccessibleRole = AccessibleRole.Link,
                 AccessibleName = $"Open {label} in your browser",
             };
-            if (!website)
-                _appearanceBindings.Add(() => control.Image = link.Logo(Theme));
+            _appearanceBindings.Add(() => control.Image = link.Logo(Theme));
             control.Click += (_, _) => OpenProjectLink(link);
             _toolTip.SetToolTip(control, link.Uri?.AbsoluteUri ?? label);
             links.Controls.Add(control, column++, 0);

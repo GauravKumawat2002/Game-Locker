@@ -6,7 +6,7 @@
 #define MyAppPublisher "GauravKumawat2002"
 #define MyAppURL "https://github.com/GauravKumawat2002/Game-Locker"
 #define MyAppServiceExeName "GameLocker.Service.exe"
-#define MyAppConfigExeName "GameLocker.ConfigUI.exe"
+#define MyAppConfigExeName "GameLocker.exe"
 #define MyAppRecoveryExeName "GameLocker.Recovery.exe"
 #ifndef GameLockerPublishDirectory
   #define GameLockerPublishDirectory "..\..\installer-package\publish"
@@ -51,6 +51,13 @@ Source: "{#GameLockerPublishDirectory}\service\*"; DestDir: "{app}\Service"; Fla
 Source: "{#GameLockerPublishDirectory}\configui\*"; DestDir: "{app}\ConfigUI"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "{#GameLockerPublishDirectory}\recovery\*"; DestDir: "{app}\Recovery"; Flags: ignoreversion recursesubdirs createallsubdirs
 ; NOTE: Don't use "Flags: ignoreversion" on any shared system files
+
+[InstallDelete]
+Type: files; Name: "{app}\ConfigUI\GameLocker.ConfigUI.exe"
+Type: files; Name: "{app}\ConfigUI\GameLocker.ConfigUI.dll"
+Type: files; Name: "{app}\ConfigUI\GameLocker.ConfigUI.deps.json"
+Type: files; Name: "{app}\ConfigUI\GameLocker.ConfigUI.runtimeconfig.json"
+Type: files; Name: "{app}\ConfigUI\GameLocker.ConfigUI.pdb"
 
 [Dirs]
 ; These deliberately carry NO "Permissions: users-full".

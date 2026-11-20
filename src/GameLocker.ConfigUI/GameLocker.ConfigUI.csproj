@@ -6,6 +6,9 @@
 
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
+    <AssemblyName>GameLocker</AssemblyName>
+    <RootNamespace>GameLocker.ConfigUI</RootNamespace>
+    <Title>GameLocker</Title>
     <TargetFramework>net8.0-windows10.0.17763.0</TargetFramework>
     <Nullable>enable</Nullable>
     <UseWindowsForms>true</UseWindowsForms>
@@ -20,6 +23,7 @@
 
   <ItemGroup>
     <Content Include="$(ApplicationIcon)" Link="GameLocker.ico" CopyToPublishDirectory="PreserveNewest" />
+    <EmbeddedResource Include="$(ApplicationIcon)" LogicalName="GameLocker.ConfigUI.GameLocker.ico" />
     <EmbeddedResource Include="Assets\*.png" />
     <AssemblyMetadata Include="GameLockerGitHubUrl" Value="$(GameLockerGitHubUrl)" />
     <AssemblyMetadata Include="GameLockerWebsiteUrl" Value="$(GameLockerWebsiteUrl)" />

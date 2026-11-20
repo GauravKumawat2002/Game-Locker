@@ -40,7 +40,7 @@ do {
         "3" {
             Write-Host ""
             Write-Host "🖥️ Launching Configuration UI..." -ForegroundColor Yellow
-            $configPath = "src\GameLocker.ConfigUI\bin\Release\net8.0-windows10.0.17763.0\win-x64\publish\GameLocker.ConfigUI.exe"
+            $configPath = "src\GameLocker.ConfigUI\bin\Release\net8.0-windows10.0.17763.0\win-x64\publish\GameLocker.exe"
             if (Test-Path $configPath) {
                 Start-Process -FilePath $configPath -WorkingDirectory (Split-Path $configPath)
                 Write-Host "✅ Configuration UI launched" -ForegroundColor Green

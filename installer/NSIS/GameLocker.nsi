@@ -69,12 +69,12 @@ Section "GameLocker" SecMain
     ; Create shortcuts
     !insertmacro MUI_STARTMENU_WRITE_BEGIN Application
         CreateDirectory "$SMPROGRAMS\$StartMenuFolder"
-        CreateShortcut "$SMPROGRAMS\$StartMenuFolder\GameLocker Configuration.lnk" "$INSTDIR\GameLocker.ConfigUI.exe"
+        CreateShortcut "$SMPROGRAMS\$StartMenuFolder\GameLocker Configuration.lnk" "$INSTDIR\GameLocker.exe"
         CreateShortcut "$SMPROGRAMS\$StartMenuFolder\Uninstall GameLocker.lnk" "$INSTDIR\Uninstall.exe"
     !insertmacro MUI_STARTMENU_WRITE_END
     
     ; Desktop shortcut
-    CreateShortcut "$DESKTOP\GameLocker Configuration.lnk" "$INSTDIR\GameLocker.ConfigUI.exe"
+    CreateShortcut "$DESKTOP\GameLocker Configuration.lnk" "$INSTDIR\GameLocker.exe"
     
     ; Write uninstaller
     WriteUninstaller "$INSTDIR\Uninstall.exe"
@@ -87,7 +87,7 @@ Section "GameLocker" SecMain
     WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\GameLocker" "InstallLocation" "$INSTDIR"
     
     ; Launch configuration UI after installation
-    Exec '"$INSTDIR\GameLocker.ConfigUI.exe"'
+    Exec '"$INSTDIR\GameLocker.exe"'
     
 SectionEnd
 
