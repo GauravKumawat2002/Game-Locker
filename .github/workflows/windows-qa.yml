@@ -3,9 +3,11 @@ name: Windows QA
 on:
   push:
     branches: [master]
+    tags: ['v*.*.*']
     paths:
       - '.github/workflows/windows-qa.yml'
       - 'Build-Installer.ps1'
+      - 'Directory.Build.props'
       - 'installer/**'
       - 'GameLocker.sln'
       - 'src/**'
@@ -53,7 +55,57 @@ jobs:
           & ./Build-Installer.ps1 -BuildType $env:PACKAGE_KIND -OutputDirectory $outputDirectory -PackageDirectory $packageDirectory
           $installers = @(Get-ChildItem -LiteralPath $outputDirectory -Filter "*.$($env:PACKAGE_KIND.ToLowerInvariant())")
           if ($installers.Count -ne 1) { throw "Expected exactly one built $env:PACKAGE_KIND installer." }
+          if ($env:GITHUB_REF_TYPE -eq 'tag') {
+              $expectedInstaller = "GameLocker-Installer-$env:GITHUB_REF_NAME.$($env:PACKAGE_KIND.ToLowerInvariant())"
+              if ($env:GITHUB_REF_NAME -cnotmatch '^v\d+\.\d+\.\d+$' -or $installers[0].Name -cne $expectedInstaller) {
+                  throw "Release tag $env:GITHUB_REF_NAME does not match the built installer."
+              }
+          }
           $env:GAMELOCKER_TEST_INSTALLER = $installers[0].FullName
 
           dotnet test tests/GameLocker.Tests/GameLocker.Tests.csproj -c Release --logger 'console;verbosity=normal'
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Save the tested installer
+        if: github.ref_type == 'tag'
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: release-installer-${{ matrix.package }}
+          path: ${{ runner.temp }}/gamelocker-installer-output/GameLocker-Installer-${{ github.ref_name }}.*
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+
+  release:
+    name: Publish stable release
+    if: github.event_name == 'push' && github.ref_type == 'tag'
+    needs: installer
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - name: Check out the annotated tag
+        uses: actions/checkout@9f698171ed81b15d1823a05fc7211befd50c8ae0 # v6.0.3
+        with:
+          ref: ${{ github.ref }}
+          persist-credentials: false
+
+      - name: Download tested installers
+        uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
+        with:
+          pattern: release-installer-*
+          path: ${{ runner.temp }}/gamelocker-release
+          merge-multiple: true
+
+      - name: Publish installers and checksums
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          directory="$RUNNER_TEMP/gamelocker-release"
+          exe="GameLocker-Installer-$GITHUB_REF_NAME.exe"
+          zip="GameLocker-Installer-$GITHUB_REF_NAME.zip"
+          (cd "$directory" && sha256sum -- "$exe" "$zip" > SHA256SUMS.txt)
+          gh release create "$GITHUB_REF_NAME" "$directory/$exe" "$directory/$zip" "$directory/SHA256SUMS.txt" \
+            --verify-tag --latest \
+            --title "GameLocker $GITHUB_REF_NAME" --notes-from-tag

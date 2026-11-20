@@ -2,15 +2,14 @@
 
 A Windows system service + configuration UI application that enforces a **game access schedule** by locking game folders outside allowed times. Perfect for maintaining discipline and controlling gaming habits.
 
-## 🚀 Latest Update (v1.1.0)
+## Latest release (v1.3.0)
 
-### ✨ **Dynamic File Extension Selection** (NEW!)
+- Redesigned schedule, game folders, and Vault workspace with System, Dark, and Light themes.
+- Timeline preview shows your play window and the next lock or unlock.
+- GameLocker Recovery and safer restore handling protect access to monitored folders during setup and uninstall.
+- Configuration is installed as `GameLocker.exe` with a branded Windows shortcut.
 
-- **🔍 Smart Extension Discovery**: Scan your game folders to see ALL file types that exist
-- **☑️ Checkbox Selection**: Manually select which file types to encrypt with checkboxes
-- **🎯 Per-Folder Settings**: Each game folder can have its own unique encryption configuration
-- **⚠️ Risk Indicators**: Clear safety labels (Safe/Moderate/High/Dangerous) to prevent game corruption
-- **📊 Real-Time Stats**: See file counts and sizes for each extension type
+[Download the latest stable Windows installer](https://github.com/GauravKumawat2002/Game-Locker/releases/latest) or read the [changelog](CHANGELOG.md).
 
 ### 🛡️ **Enhanced Security**
 
@@ -29,7 +28,7 @@ A Windows system service + configuration UI application that enforces a **game a
 
 ### 🎯 **Quick Start**
 
-1. Open `GameLocker-Installer-v1.1.0.exe` and approve the Windows administrator prompt.
+1. Open `GameLocker-Installer-v1.3.0.exe` and approve the Windows administrator prompt.
 2. Finish setup and open **GameLocker Configuration**.
 3. Add a game folder and choose allowed days, a start time, and a duration. Check the next lock or unlock in the preview, then save.
 4. To use vault encryption, enable it and choose the file extensions for that folder.
@@ -310,8 +309,8 @@ dotnet publish src/GameLocker.Service -c Release -r win-x64 --self-contained tru
 dotnet publish src/GameLocker.ConfigUI -c Release -r win-x64 --self-contained true -o installer-package/publish/configui
 
 # The script creates:
-# - GameLocker-Installer-v1.1.0.zip (PowerShell-based, ~115 MB)
-# - GameLocker-Installer-v1.1.0.exe (GUI installer, requires Inno Setup)
+# - GameLocker-Installer-v1.3.0.zip (PowerShell-based)
+# - GameLocker-Installer-v1.3.0.exe (GUI installer, requires Inno Setup)
 ```
 
 ### **Development Tools**
@@ -354,7 +353,7 @@ powershell -ExecutionPolicy Bypass -File "Quick-Test.ps1"
 - Verify streaming encryption handles large files efficiently
 - Monitor memory usage during encryption/decryption operations
 
-## 🎯 Recent Completions (v1.1.0)
+## v1.1.0 highlights
 
 - ✅ **Dynamic Extension Discovery**: Scan folders to see actual file types
 - ✅ **Per-Folder Settings**: Each folder can have unique encryption config
@@ -363,7 +362,7 @@ powershell -ExecutionPolicy Bypass -File "Quick-Test.ps1"
 - ✅ **Complete Documentation**: Developer handbook in docs/ folder
 - ✅ **Enhanced FolderLocker**: Selective encryption support
 
-## 📦 Previous Release (v1.0.0)
+## v1.0.0 highlights
 
 - ✅ **Complete File Encryption**: AES-256 streaming encryption
 - ✅ **Enhanced ACL Security**: Multi-layered access control

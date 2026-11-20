@@ -64,7 +64,7 @@ dotnet publish src/GameLocker.Recovery/GameLocker.Recovery.csproj `
 Copy-Item "installer/PowerShell/GameLocker-Setup.ps1", "installer/PowerShell/Setup.bat" -Destination "installer-package/" -Force
 
 # Create ZIP
-Compress-Archive -Path "installer-package\*" -DestinationPath ".\GameLocker-Installer-v1.1.0.zip" -Force
+Compress-Archive -Path "installer-package\*" -DestinationPath ".\GameLocker-Installer-v1.3.0.zip" -Force
 ```
 
 ---
@@ -163,16 +163,16 @@ Remove-Item "installer-package/publish" -Recurse -Force -ErrorAction SilentlyCon
 
 ## Publishing to GitHub
 
-```powershell
-# Build
-cd "h:\Work\10xProductivity\game_locker\code"
-.\Build-Installer.ps1 -BuildType Both
+Set the release version in `../Directory.Build.props` and `InnoSetup/GameLocker-Setup.iss`, update `../CHANGELOG.md`, and commit the tested changes locally. From the repository root, validate the packages and push an annotated tag for the release commit.
 
-# Upload to GitHub Release
-cd "h:\Work\10xProductivity\game_locker\code"
-gh release upload v1.1.0 "..\GameLocker-Installer-v1.1.0.exe" --clobber
-gh release upload v1.1.0 "..\GameLocker-Installer-v1.1.0.zip" --clobber
+```powershell
+.\Build-Installer.ps1 -BuildType Both
+git push origin master
+git tag -a v1.3.0 -F path/to/release-notes.md
+git push origin refs/tags/v1.3.0
 ```
+
+Windows QA tests the tagged EXE and ZIP installers, then publishes the same files and `SHA256SUMS.txt` as the latest stable release. The tag annotation supplies the release notes.
 
 ---
 
@@ -185,10 +185,6 @@ their Start menu shortcuts.
 1. **Code Signing** (Optional, for production)
     - Get a code signing certificate
     - Sign the EXE: `signtool sign /f cert.pfx /p password GameLocker-Installer.exe`
-
-2. **Version Info**
-    - Update version in `.csproj` files
-    - Update Inno Setup script version
 
 ---
 

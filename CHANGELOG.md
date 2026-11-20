@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.3.0] - 2026-11-20
+
+### Added
+
+- Redesigned the Configuration workspace around the schedule, game folders, and Vault. The theme follows Windows by default and can be set to Dark or Light.
+- Added a schedule timeline and a preview of the next lock or unlock.
+- Added GameLocker Recovery to repair folders with pending restore operations. Uninstall attempts recovery before removing the service or tools.
+
+### Changed
+
+- Configuration now ships as `GameLocker.exe` with a branded Windows icon. Both Windows installers replace the old executable and update the Configuration shortcut.
+- The portfolio button uses the website's monogram. Folder menus and schedule controls follow the active theme.
+- EXE and ZIP installers are published alongside SHA-256 checksums after passing elevated Windows QA.
+
+### Fixed
+
+- Improved ACL restoration, vault recovery, and key preservation during interrupted operations and upgrades.
+- Improved schedule cutoff handling across monitored folders. GameLocker requests a normal game exit before restricting access and honors the schedule during vault work.
+- Added a Print Screen handler for the focused Configuration window when Windows is set to open Snipping Tool.
+
+---
+
 ## [1.2.0] - 2026-02-01
 
 ### Fixed
@@ -184,6 +206,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 | Version | Date       | Highlights                                     |
 | ------- | ---------- | ---------------------------------------------- |
+| 1.3.0   | 2026-11-20 | Redesigned workspace, Recovery, tested installers |
+| 1.2.0   | 2026-02-01 | Folder decryption, ACL restoration and service reload fixes |
 | 1.1.0   | 2026-01-31 | Dynamic extension selection, ForceDecrypt tool |
 | 1.0.0   | 2026-01-30 | Initial release with full encryption + ACL     |
 

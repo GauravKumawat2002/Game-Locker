@@ -14,6 +14,10 @@ $PackageDirectory = [IO.Path]::GetFullPath($PackageDirectory)
 $innoScript = Join-Path $PSScriptRoot 'installer/InnoSetup/GameLocker-Setup.iss'
 $versionLine = Select-String -LiteralPath $innoScript -Pattern '^#define MyAppVersion "([^"]+)"$'
 $version = $versionLine.Matches[0].Groups[1].Value
+$buildProperties = [xml](Get-Content -LiteralPath (Join-Path $PSScriptRoot 'Directory.Build.props') -Raw)
+if ($version -ne $buildProperties.Project.PropertyGroup.Version) {
+    throw 'The application and Inno Setup versions must match.'
+}
 $artifactName = "GameLocker-Installer-v$version"
 $zipPath = Join-Path $OutputDirectory "$artifactName.zip"
 $packagePrefix = $PackageDirectory.TrimEnd([char[]]@('\', '/')) + [IO.Path]::DirectorySeparatorChar

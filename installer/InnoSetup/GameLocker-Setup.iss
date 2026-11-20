@@ -2,7 +2,7 @@
 ; Requires Inno Setup 6.0 or later: https://jrsoftware.org/isdl.php
 
 #define MyAppName "GameLocker"
-#define MyAppVersion "1.1.0"
+#define MyAppVersion "1.3.0"
 #define MyAppPublisher "GauravKumawat2002"
 #define MyAppURL "https://github.com/GauravKumawat2002/Game-Locker"
 #define MyAppServiceExeName "GameLocker.Service.exe"
@@ -17,6 +17,8 @@
 AppId={{8F7A3B2C-9D4E-4F1A-B8C7-6E5D4C3B2A10}
 AppName={#MyAppName}
 AppVersion={#MyAppVersion}
+VersionInfoVersion={#MyAppVersion}.0
+VersionInfoProductVersion={#MyAppVersion}
 AppPublisher={#MyAppPublisher}
 AppPublisherURL={#MyAppURL}
 AppSupportURL={#MyAppURL}

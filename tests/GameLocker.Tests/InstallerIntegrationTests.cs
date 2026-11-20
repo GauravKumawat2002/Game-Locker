@@ -32,6 +32,9 @@ public sealed class InstallerIntegrationTests
         var fixture = Directory.CreateTempSubdirectory("GameLocker-Installer-");
         var gameFolder = fixture.CreateSubdirectory("game").FullName;
         var installFolder = Path.Combine(fixture.FullName, "app");
+        var configUiFolder = Directory.CreateDirectory(Path.Combine(installFolder, "ConfigUI"));
+        var legacyUi = Path.Combine(configUiFolder.FullName, "GameLocker.ConfigUI.exe");
+        await File.WriteAllTextAsync(legacyUi, "Legacy Configuration executable fixture");
         var originalAcl = FolderAclManager.Capture(gameFolder);
         var saveFile = Path.Combine(gameFolder, "example.sav");
         await File.WriteAllTextAsync(saveFile, "GameLocker installer test fixture");
@@ -40,6 +43,9 @@ public sealed class InstallerIntegrationTests
         try
         {
             await InstallAsync(package, fixture, installFolder);
+            Assert.True(File.Exists(Path.Combine(configUiFolder.FullName, "GameLocker.exe")));
+            Assert.True(File.Exists(Path.Combine(configUiFolder.FullName, "GameLocker.ico")));
+            Assert.False(File.Exists(legacyUi), "The installer did not replace the legacy Configuration executable.");
             await EventuallyAsync(ServiceManager.IsServiceRunning, "The installed Windows service did not start.");
             var executable = Path.Combine(installFolder, "Service", "GameLocker.Service.exe");
             var imagePath = Registry.GetValue(

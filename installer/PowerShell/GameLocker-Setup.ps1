@@ -72,7 +72,7 @@ $Payload = [ordered]@{
 }
 
 Write-Host "======================================" -ForegroundColor Green
-Write-Host "    GameLocker Complete Setup v1.0    " -ForegroundColor Green
+Write-Host "      GameLocker Complete Setup       " -ForegroundColor Green
 Write-Host "======================================" -ForegroundColor Green
 Write-Host ""
 
@@ -168,15 +168,17 @@ function Install-Service {
 
 function Configure-Service {
     Write-Status "Configuring service settings..." "Cyan"
-    
+    $executable = Join-Path $ConfigPath $Payload.configui.Executable
+    $version = [Diagnostics.FileVersionInfo]::GetVersionInfo($executable)
+
     # Create service configuration file
     $serviceConfig = @{
         ServiceName = $ServiceName
         InstallPath = $InstallPath
         DataPath = $DataPath
         LogPath = $LogPath
-        ConfigUIPath = Join-Path $ConfigPath $Payload.configui.Executable
-        Version = "1.0.0"
+        ConfigUIPath = $executable
+        Version = '{0}.{1}.{2}' -f $version.FileMajorPart, $version.FileMinorPart, $version.FileBuildPart
         InstallDate = (Get-Date).ToString("yyyy-MM-dd HH:mm:ss")
     }
     
