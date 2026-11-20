@@ -178,15 +178,15 @@ gh release upload v1.1.0 "..\GameLocker-Installer-v1.1.0.zip" --clobber
 
 ## Next Steps for Professional Look
 
-1. **Add Application Icon**
-    - Create `installer/Icons/gamelocker.ico` (256x256)
-    - Tools: GIMP, Photoshop, or online converters
+GameLocker Configuration, GameLocker Recovery, and the EXE installer share the
+multi-size icon at `installer/Icons/gamelocker.ico`. Both installers use it for
+their Start menu shortcuts.
 
-2. **Code Signing** (Optional, for production)
+1. **Code Signing** (Optional, for production)
     - Get a code signing certificate
     - Sign the EXE: `signtool sign /f cert.pfx /p password GameLocker-Installer.exe`
 
-3. **Version Info**
+2. **Version Info**
     - Update version in `.csproj` files
     - Update Inno Setup script version
 

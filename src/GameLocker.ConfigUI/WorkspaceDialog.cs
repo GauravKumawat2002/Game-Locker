@@ -24,6 +24,7 @@ internal sealed class WorkspaceDialog : Form
         MaximizeBox = false;
         StartPosition = FormStartPosition.CenterParent;
         Text = "GameLocker";
+        Icon = owner.Icon;
         Font = WorkspaceTheme.Body;
 
         var root = new TableLayoutPanel

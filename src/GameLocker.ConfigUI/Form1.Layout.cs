@@ -354,19 +354,27 @@ public partial class Form1
         row.Controls.Add(input, 0, 0);
         if (suffix is not null)
             row.Controls.Add(Caption(suffix, WorkspaceTheme.Transition), 1, 0);
-        var stepper = Grid(1, 2);
+        var stepper = Grid(2, 3);
+        stepper.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 1));
+        stepper.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         stepper.RowStyles.Add(new RowStyle(SizeType.Percent, 50));
+        stepper.RowStyles.Add(new RowStyle(SizeType.Absolute, 1));
         stepper.RowStyles.Add(new RowStyle(SizeType.Percent, 50));
-        increase = new WorkspaceButton("+")
+        var edge = BindBackground(new Panel { Dock = DockStyle.Fill, Margin = Padding.Empty }, theme => theme.ControlLine);
+        var divider = BindBackground(new Panel { Dock = DockStyle.Fill, Margin = Padding.Empty }, theme => theme.ControlLine);
+        increase = BindBackground(new WorkspaceButton("+", bare: true)
         {
             Font = WorkspaceTheme.Transition, Dock = DockStyle.Fill, Margin = Padding.Empty, TabIndex = 0,
-        };
-        decrease = new WorkspaceButton("−")
+        }, theme => theme.Raised);
+        decrease = BindBackground(new WorkspaceButton("−", bare: true)
         {
             Font = WorkspaceTheme.Transition, Dock = DockStyle.Fill, Margin = Padding.Empty, TabIndex = 1,
-        };
-        stepper.Controls.Add(increase, 0, 0);
-        stepper.Controls.Add(decrease, 0, 1);
+        }, theme => theme.Raised);
+        stepper.Controls.Add(edge, 0, 0);
+        stepper.SetRowSpan(edge, 3);
+        stepper.Controls.Add(increase, 1, 0);
+        stepper.Controls.Add(divider, 1, 1);
+        stepper.Controls.Add(decrease, 1, 2);
         row.Controls.Add(stepper, row.ColumnCount - 1, 0);
         surface.Controls.Add(row);
         field.Controls.Add(surface, 0, 1);
@@ -667,9 +675,16 @@ public partial class Form1
 
     private ContextMenuStrip CreateMenu(params ToolStripItem[] items)
     {
-        var menu = BindBackground(new ContextMenuStrip { ShowImageMargin = false, ShowCheckMargin = true },
-            theme => theme.Raised);
+        var menu = BindBackground(new ContextMenuStrip
+        {
+            Font = WorkspaceTheme.Link,
+            ShowImageMargin = false,
+            ShowCheckMargin = items.OfType<ToolStripMenuItem>().Any(item => item.CheckOnClick),
+            Renderer = new WorkspaceMenuRenderer(() => Theme),
+        }, theme => theme.Raised);
         BindForeground(menu, theme => theme.Text);
+        foreach (var item in items)
+            item.Padding = new Padding(6, 4, 6, 4);
         menu.Items.AddRange(items);
         _menus.Add(menu);
         return menu;

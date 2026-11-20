@@ -11,6 +11,7 @@
     <UseWindowsForms>true</UseWindowsForms>
     <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
     <ImplicitUsings>enable</ImplicitUsings>
+    <ApplicationIcon>..\..\installer\Icons\gamelocker.ico</ApplicationIcon>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <GameLockerGitHubUrl Condition="'$(GameLockerGitHubUrl)' == ''">https://github.com/GauravKumawat2002/Game-Locker</GameLockerGitHubUrl>
     <GameLockerWebsiteUrl Condition="'$(GameLockerWebsiteUrl)' == ''">https://gauravkumawat.dev/</GameLockerWebsiteUrl>
@@ -18,6 +19,7 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <Content Include="$(ApplicationIcon)" Link="GameLocker.ico" CopyToPublishDirectory="PreserveNewest" />
     <EmbeddedResource Include="Assets\*.png" />
     <AssemblyMetadata Include="GameLockerGitHubUrl" Value="$(GameLockerGitHubUrl)" />
     <AssemblyMetadata Include="GameLockerWebsiteUrl" Value="$(GameLockerWebsiteUrl)" />

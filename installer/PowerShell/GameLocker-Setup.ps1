@@ -209,18 +209,21 @@ function Create-StartMenuShortcuts {
         }
         
         $shell = New-Object -ComObject WScript.Shell
+        $shortcutIcon = Join-Path $ConfigPath 'GameLocker.ico'
         
         # Config UI shortcut
         $configShortcut = $shell.CreateShortcut((Join-Path $gameLockFolder "GameLocker Configuration.lnk"))
         $configShortcut.TargetPath = Join-Path $ConfigPath "GameLocker.ConfigUI.exe"
         $configShortcut.WorkingDirectory = $ConfigPath
         $configShortcut.Description = "Configure GameLocker settings"
+        $configShortcut.IconLocation = "$shortcutIcon,0"
         $configShortcut.Save()
 
         $recoveryShortcut = $shell.CreateShortcut((Join-Path $gameLockFolder 'GameLocker Recovery.lnk'))
         $recoveryShortcut.TargetPath = Join-Path $RecoveryPath 'GameLocker.Recovery.exe'
         $recoveryShortcut.WorkingDirectory = $RecoveryPath
         $recoveryShortcut.Description = 'List folders that need repair'
+        $recoveryShortcut.IconLocation = "$shortcutIcon,0"
         $recoveryShortcut.Save()
         
         # Uninstall shortcut
@@ -228,6 +231,7 @@ function Create-StartMenuShortcuts {
         $uninstallShortcut.TargetPath = "powershell.exe"
         $uninstallShortcut.Arguments = "-ExecutionPolicy Bypass -File `"$(Join-Path $InstallPath 'GameLocker-Uninstall.ps1')`""
         $uninstallShortcut.Description = "Uninstall GameLocker"
+        $uninstallShortcut.IconLocation = "$shortcutIcon,0"
         $uninstallShortcut.Save()
         
         Write-Status "Start Menu shortcuts created" "Gray"

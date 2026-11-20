@@ -27,7 +27,7 @@ AllowNoIcons=yes
 LicenseFile=..\..\LICENSE
 OutputDir=..\..\
 OutputBaseFilename=GameLocker-Installer-v{#MyAppVersion}
-; SetupIconFile=..\Icons\gamelocker.ico
+SetupIconFile=..\Icons\gamelocker.ico
 Compression=lzma2/ultra64
 SolidCompression=yes
 PrivilegesRequired=admin
@@ -35,7 +35,7 @@ ArchitecturesAllowed=x64
 ArchitecturesInstallIn64BitMode=x64
 WizardStyle=modern
 DisableProgramGroupPage=yes
-UninstallDisplayIcon={app}\ConfigUI\{#MyAppConfigExeName}
+UninstallDisplayIcon={app}\ConfigUI\GameLocker.ico
 
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
@@ -66,10 +66,10 @@ Name: "{app}\Logs"
 Name: "{commonappdata}\{#MyAppName}"
 
 [Icons]
-Name: "{group}\{#MyAppName} Configuration"; Filename: "{app}\ConfigUI\{#MyAppConfigExeName}"
-Name: "{group}\{#MyAppName} Recovery"; Filename: "{app}\Recovery\{#MyAppRecoveryExeName}"
-Name: "{group}\Uninstall {#MyAppName}"; Filename: "{uninstallexe}"
-Name: "{autodesktop}\{#MyAppName} Configuration"; Filename: "{app}\ConfigUI\{#MyAppConfigExeName}"; Tasks: desktopicon
+Name: "{group}\{#MyAppName} Configuration"; Filename: "{app}\ConfigUI\{#MyAppConfigExeName}"; IconFilename: "{app}\ConfigUI\GameLocker.ico"
+Name: "{group}\{#MyAppName} Recovery"; Filename: "{app}\Recovery\{#MyAppRecoveryExeName}"; IconFilename: "{app}\ConfigUI\GameLocker.ico"
+Name: "{group}\Uninstall {#MyAppName}"; Filename: "{uninstallexe}"; IconFilename: "{app}\ConfigUI\GameLocker.ico"
+Name: "{autodesktop}\{#MyAppName} Configuration"; Filename: "{app}\ConfigUI\{#MyAppConfigExeName}"; IconFilename: "{app}\ConfigUI\GameLocker.ico"; Tasks: desktopicon
 
 [Run]
 ; Launch Config UI with Setup's elevated token.
